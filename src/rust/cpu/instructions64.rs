@@ -403,6 +403,101 @@ unsafe fn switch_seg_64_code(selector: i32) -> bool {
     true
 }
 
+/// shl, shr and sar at any operand size.
+///
+/// Carry and overflow are worked out here and stored, the way the 32-bit shifts do it, while sign,
+/// zero and parity are left to be derived from the result. A count of zero changes no flags at all.
+/// The rotates share these opcodes but are not implemented, and are refused rather than guessed at.
+unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i64> {
+    let count = raw_count & if osize == 64 { 63 } else { 31 };
+    if count == 0 {
+        return Some(value);
+    }
+
+    let (result, cf, of) = match op {
+        // shl
+        4 | 6 => {
+            let result = sized(value.wrapping_shl(count as u32), osize);
+            let cf = value.wrapping_shr((osize - count) as u32) & 1;
+            let sign = (result >> (osize - 1)) & 1;
+            (result, cf, cf ^ sign)
+        },
+        // shr, which is logical and so needs the value zero extended to its own width first
+        5 => {
+            let unsigned = match osize {
+                16 => value as u16 as u64,
+                32 => value as u32 as u64,
+                _ => value as u64,
+            };
+            let result = sized((unsigned >> count) as i64, osize);
+            let cf = ((unsigned >> (count - 1)) & 1) as i64;
+            // overflow is the sign of the original operand
+            let of = (value >> (osize - 1)) & 1;
+            (result, cf, of)
+        },
+        // sar, arithmetic, so the operand keeps its sign
+        7 => {
+            let signed = sized(value, osize);
+            let result = sized(signed >> count, osize);
+            let cf = (signed >> (count - 1)) & 1;
+            (result, cf, 0)
+        },
+        _ => {
+            dbg_log!("Unimplemented: 64-bit rotate, op {}", op);
+            return None;
+        },
+    };
+
+    if osize == 64 {
+        *last_result_64 = result;
+    }
+    else {
+        *last_result = result as i32;
+    }
+    *last_op_size = if osize == 64 {
+        OPSIZE_64
+    }
+    else if osize == 32 {
+        OPSIZE_32
+    }
+    else {
+        OPSIZE_16
+    };
+    *flags_changed = FLAGS_ALL & !FLAG_CARRY & !FLAG_OVERFLOW;
+    *flags = *flags & !FLAG_CARRY & !FLAG_OVERFLOW
+        | (cf as i32) & FLAG_CARRY
+        | ((of as i32) << 11) & FLAG_OVERFLOW;
+
+    Some(result)
+}
+
+/// An sse instruction whose behaviour is identical in 64-bit mode, delegated to its existing
+/// implementation.
+///
+/// rex.r and rex.b would reach xmm8-15, which v86 has no room for: reg_xmm holds eight. Those
+/// encodings are refused rather than silently aliased onto the low eight.
+unsafe fn sse_delegate(
+    modrm_byte: i32,
+    reg_fn: unsafe fn(i32, i32),
+    mem_fn: unsafe fn(i32, i32),
+) -> bool {
+    if 0 != *rex & (REX_R | REX_B) {
+        dbg_log!("Unimplemented: xmm8-15");
+        return false;
+    }
+    let r = modrm_byte >> 3 & 7;
+    if modrm_byte >= 0xC0 {
+        reg_fn(modrm_byte & 7, r);
+    }
+    else {
+        match resolve_modrm64(modrm_byte) {
+            Ok(addr) => mem_fn(addr, r),
+            Err(()) => {},
+        }
+    }
+    true
+}
+
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
 /// opcode isn't implemented yet, in which case the caller reports it.
 pub unsafe fn run(opcode: i32) -> bool {
@@ -495,6 +590,54 @@ pub unsafe fn run(opcode: i32) -> bool {
                 let _ = write_rm(modrm_byte, result, osize);
             }
             true
+        },
+
+        // shift group with an imm8 count (0xC1) or a count of one (0xD1)
+        0xC1 | 0xD1 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let value = match read_rm(modrm_byte, osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let count = if opcode == 0xD1 {
+                1
+            }
+            else {
+                match read_imm8() {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            };
+            match shift_op(modrm_byte >> 3 & 7, value, count, osize) {
+                Some(result) => {
+                    let _ = write_rm(modrm_byte, result, osize);
+                    true
+                },
+                None => false,
+            }
+        },
+
+        // shift group by cl
+        0xD3 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let value = match read_rm(modrm_byte, osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let count = read_reg8(1 /* cl */);
+            match shift_op(modrm_byte >> 3 & 7, value, count, osize) {
+                Some(result) => {
+                    let _ = write_rm(modrm_byte, result, osize);
+                    true
+                },
+                None => false,
+            }
         },
 
         // test r/m8, r8
@@ -1007,6 +1150,49 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             let extended = if opcode == 0xBF { value as i16 as i64 } else { value as i8 as i64 };
             write_reg_sized(reg, extended, osize);
             true
+        },
+
+        // sse instructions that behave the same in 64-bit mode
+        0x10 | 0x11 | 0x28 | 0x29 | 0x57 | 0x6F | 0x7F | 0xEF => {
+            use crate::cpu::instructions_0f as i0f;
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
+            let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+            if has_f3 {
+                return match opcode {
+                    0x10 => sse_delegate(modrm_byte, i0f::instr_F30F10_reg, i0f::instr_F30F10_mem),
+                    0x11 => sse_delegate(modrm_byte, i0f::instr_F30F11_reg, i0f::instr_F30F11_mem),
+                    0x6F => sse_delegate(modrm_byte, i0f::instr_F30F6F_reg, i0f::instr_F30F6F_mem),
+                    0x7F => sse_delegate(modrm_byte, i0f::instr_F30F7F_reg, i0f::instr_F30F7F_mem),
+                    _ => {
+                        dbg_log!("Unimplemented 64-bit sse f3 {:02x}", opcode);
+                        false
+                    },
+                };
+            }
+            match (opcode, has_66) {
+                (0x10, false) => sse_delegate(modrm_byte, i0f::instr_0F10_reg, i0f::instr_0F10_mem),
+                (0x11, false) => sse_delegate(modrm_byte, i0f::instr_0F11_reg, i0f::instr_0F11_mem),
+                (0x28, false) => sse_delegate(modrm_byte, i0f::instr_0F28_reg, i0f::instr_0F28_mem),
+                (0x29, false) => sse_delegate(modrm_byte, i0f::instr_0F29_reg, i0f::instr_0F29_mem),
+                (0x57, false) => sse_delegate(modrm_byte, i0f::instr_0F57_reg, i0f::instr_0F57_mem),
+                (0x6F, true) => {
+                    sse_delegate(modrm_byte, i0f::instr_660F6F_reg, i0f::instr_660F6F_mem)
+                },
+                (0x7F, true) => {
+                    sse_delegate(modrm_byte, i0f::instr_660F7F_reg, i0f::instr_660F7F_mem)
+                },
+                (0xEF, true) => {
+                    sse_delegate(modrm_byte, i0f::instr_660FEF_reg, i0f::instr_660FEF_mem)
+                },
+                _ => {
+                    dbg_log!("Unimplemented 64-bit sse {:02x} 66={}", opcode, has_66);
+                    false
+                },
+            }
         },
 
         // cpuid
