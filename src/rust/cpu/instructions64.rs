@@ -603,6 +603,28 @@ unsafe fn write_rm_keep_addr(
     }
 }
 
+/// bt, bts, btr and btc.
+///
+/// Carry takes the bit as it was; the other arithmetic flags are undefined, so they are left. The
+/// bit index is taken modulo the operand size here, which is what the immediate form does. The
+/// register-index form addressing memory can reach outside the operand, and is handled separately.
+unsafe fn bit_test_op(op: i32, value: i64, bit: i32, osize: i32) -> Option<i64> {
+    let index = bit & (osize - 1);
+    let mask = 1i64 << index;
+    let old = 0 != value & mask;
+
+    *flags_changed &= !FLAG_CARRY;
+    *flags = *flags & !FLAG_CARRY | if old { FLAG_CARRY } else { 0 };
+
+    match op {
+        4 => None,                // bt, which only reads
+        5 => Some(value | mask),  // bts
+        6 => Some(value & !mask), // btr
+        7 => Some(value ^ mask),  // btc
+        _ => None,
+    }
+}
+
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
 /// opcode isn't implemented yet, in which case the caller reports it.
 pub unsafe fn run(opcode: i32) -> bool {
@@ -1470,6 +1492,60 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             else {
                 *idtr_size = size;
                 *idtr_offset = base;
+            }
+            true
+        },
+
+        // bit test group with an immediate index
+        0xBA => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let op = modrm_byte >> 3 & 7;
+            if !(4..=7).contains(&op) {
+                dbg_log!("Unimplemented: 64-bit 0fba /{}", op);
+                return false;
+            }
+            let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let bit = match read_imm8() {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            if let Some(result) = bit_test_op(op, value, bit, osize) {
+                let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
+            }
+            true
+        },
+
+        // bit test group with the index in a register. With a memory operand the index is signed
+        // and can reach outside the operand, which is not implemented; the register form is.
+        0xA3 | 0xAB | 0xB3 | 0xBB => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            if modrm_byte < 0xC0 {
+                dbg_log!("Unimplemented: 64-bit bit test on memory with a register index");
+                return false;
+            }
+            // the operation sits where the reg field would be for the immediate form
+            let op = match opcode {
+                0xA3 => 4,
+                0xAB => 5,
+                0xB3 => 6,
+                _ => 7,
+            };
+            let bit = read_reg64(modrm_reg(modrm_byte)) as i32;
+            let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            if let Some(result) = bit_test_op(op, value, bit, osize) {
+                let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
             }
             true
         },
