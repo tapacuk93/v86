@@ -26,6 +26,17 @@ fn truncate_address(addr: i64) -> OrPageFault<i32> {
     Ok(addr as i32)
 }
 
+/// Narrow a value to the current operand size, sign extended so the flag computation sees the
+/// right sign bit
+fn sized(value: i64, wide: bool) -> i64 {
+    if wide {
+        value
+    }
+    else {
+        value as i32 as i64
+    }
+}
+
 unsafe fn rex_bit(bit: u8) -> i32 {
     if 0 != *rex & bit {
         8
@@ -149,34 +160,221 @@ unsafe fn write_rm(modrm_byte: i32, value: i64, wide: bool) -> OrPageFault<()> {
     }
 }
 
+/// Set the arithmetic flags from a 64-bit result.
+///
+/// v86 normally defers flag computation, keeping the operands in last_op1/last_result, which are
+/// 32 bits wide and read by generated code. Rather than widen that and every site that touches it,
+/// 64-bit operations compute their flags up front and clear flags_changed, so the getters read the
+/// flags register directly. This costs 64-bit arithmetic the lazy path but leaves the 32-bit hot
+/// path and the jit completely untouched.
+unsafe fn set_flags64(op1: i64, op2: i64, result: i64, is_sub: bool) {
+    // Sign extension preserves unsigned order between the two halves of the range, so comparing
+    // the extended values gives the same carry as comparing at the original width
+    let cf = if is_sub { (op1 as u64) < (op2 as u64) } else { (result as u64) < (op1 as u64) };
+    let af = 0 != (op1 ^ op2 ^ result) & 0x10;
+    let zf = result == 0;
+    let sf = result < 0;
+    let of =
+        if is_sub { (op1 ^ op2) & (op1 ^ result) < 0 } else { (op1 ^ result) & (op2 ^ result) < 0 };
+    // parity is computed over the low byte only, as on 32-bit
+    let pf = (result as u8).count_ones() % 2 == 0;
+
+    *flags = *flags & !FLAGS_ALL
+        | if cf { FLAG_CARRY } else { 0 }
+        | if pf { FLAG_PARITY } else { 0 }
+        | if af { FLAG_ADJUST } else { 0 }
+        | if zf { FLAG_ZERO } else { 0 }
+        | if sf { FLAG_SIGN } else { 0 }
+        | if of { FLAG_OVERFLOW } else { 0 };
+    *flags_changed = 0;
+}
+
+/// Set the flags of a logical operation, which always clear carry and overflow
+unsafe fn set_flags64_logical(result: i64) {
+    let pf = (result as u8).count_ones() % 2 == 0;
+    *flags = *flags & !FLAGS_ALL
+        | if pf { FLAG_PARITY } else { 0 }
+        | if result == 0 { FLAG_ZERO } else { 0 }
+        | if result < 0 { FLAG_SIGN } else { 0 };
+    *flags_changed = 0;
+}
+
+/// One of the eight operations of the 0x80/0x81/0x83 group, and of the eight `op r/m, r` /
+/// `op r, r/m` pairs. Returns the result to write back, or None for cmp and test which discard it.
+unsafe fn group1_op(op: i32, dst: i64, src: i64, wide: bool) -> Option<i64> {
+    // The operands arrive sign extended, so a narrower result has to be brought back to its own
+    // width before the flags are read off it: otherwise the sign bit is looked for at bit 63 and
+    // a result of 0x1_0000_0000 would not count as zero.
+    match op {
+        0 => {
+            let r = sized(dst.wrapping_add(src), wide);
+            set_flags64(dst, src, r, false);
+            Some(r)
+        },
+        1 => {
+            let r = sized(dst | src, wide);
+            set_flags64_logical(r);
+            Some(r)
+        },
+        4 => {
+            let r = sized(dst & src, wide);
+            set_flags64_logical(r);
+            Some(r)
+        },
+        5 => {
+            let r = sized(dst.wrapping_sub(src), wide);
+            set_flags64(dst, src, r, true);
+            Some(r)
+        },
+        6 => {
+            let r = sized(dst ^ src, wide);
+            set_flags64_logical(r);
+            Some(r)
+        },
+        7 => {
+            // cmp: subtract and discard
+            let r = sized(dst.wrapping_sub(src), wide);
+            set_flags64(dst, src, r, true);
+            None
+        },
+        // adc and sbb need the incoming carry, which is fine, but they are not needed yet
+        _ => {
+            dbg_log!("Unimplemented: 64-bit group1 op {}", op);
+            dbg_assert!(false, "Unimplemented: 64-bit adc/sbb");
+            None
+        },
+    }
+}
+
+/// The condition encoded in the low nibble of a jcc, setcc or cmovcc opcode
+unsafe fn test_condition(condition: i32) -> bool {
+    use crate::cpu::misc_instr::*;
+    let result = match condition >> 1 {
+        0 => test_o(),
+        1 => test_b(),
+        2 => test_z(),
+        3 => test_be(),
+        4 => test_s(),
+        5 => test_p(),
+        6 => test_l(),
+        _ => test_le(),
+    };
+    // odd encodings are the negation
+    result != (0 != condition & 1)
+}
+
+/// Narrow a result to its operand width, sign extended, so the flags are read at the right bit
+fn narrow(value: i64, byte_op: bool, wide: bool) -> i64 {
+    if byte_op {
+        value as i8 as i64
+    }
+    else {
+        sized(value, wide)
+    }
+}
+
+unsafe fn read_rm8(modrm_byte: i32) -> OrPageFault<i32> {
+    if modrm_byte >= 0xC0 {
+        Ok(read_reg8(modrm_rm(modrm_byte)))
+    }
+    else {
+        safe_read8(resolve_modrm64(modrm_byte)?)
+    }
+}
+
+unsafe fn write_rm8(modrm_byte: i32, value: i32) -> OrPageFault<()> {
+    if modrm_byte >= 0xC0 {
+        write_reg8(modrm_rm(modrm_byte), value);
+        Ok(())
+    }
+    else {
+        safe_write8(resolve_modrm64(modrm_byte)?, value)
+    }
+}
+
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
 /// opcode isn't implemented yet, in which case the caller reports it.
 pub unsafe fn run(opcode: i32) -> bool {
-    // rex.w wins over a 0x66 prefix, which otherwise selects a 16-bit operand size
+    // rex.w selects a 64-bit operand size, otherwise it is 32. A 0x66 prefix would make it 16,
+    // which no instruction here implements yet.
     let wide = 0 != *rex & REX_W;
-    let narrow = !wide && 0 != *prefixes & crate::prefix::PREFIX_66;
 
     match opcode {
-        // sub r, r/m
-        0x2B => {
+        // `op r/m, r` for add/or/and/sub/xor/cmp. The operation is bits 5:3 of the opcode.
+        0x01 | 0x09 | 0x21 | 0x29 | 0x31 | 0x39 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let src = sized(read_reg64(modrm_reg(modrm_byte)), wide);
+            let dst = match read_rm(modrm_byte, wide) {
+                Ok(v) => sized(v, wide),
+                Err(()) => return true,
+            };
+            if let Some(result) = group1_op(opcode >> 3 & 7, dst, src, wide) {
+                let _ = write_rm(modrm_byte, result, wide);
+            }
+            true
+        },
+
+        // `op r, r/m` for the same set
+        0x03 | 0x0B | 0x23 | 0x2B | 0x33 | 0x3B => {
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
                 Err(()) => return true,
             };
             let reg = modrm_reg(modrm_byte);
             let src = match read_rm(modrm_byte, wide) {
-                Ok(v) => v,
+                Ok(v) => sized(v, wide),
                 Err(()) => return true,
             };
-            if wide {
-                // 64-bit arithmetic needs the lazy flag machinery to gain a 64-bit operand size,
-                // which it doesn't have. Refusing is better than leaving the flags stale and
-                // sending every conditional branch after this the wrong way.
-                dbg_log!("Unimplemented: 64-bit sub");
-                return false;
+            let dst = sized(read_reg64(reg), wide);
+            if let Some(result) = group1_op(opcode >> 3 & 7, dst, src, wide) {
+                write_reg_sized(reg, result, wide);
             }
-            let dst = read_reg64(reg) as i32;
-            write_reg_sized(reg, crate::cpu::arith::sub32(dst, src as i32) as i64, false);
+            true
+        },
+
+        // group1: op r/m, imm32 (0x81) or sign extended imm8 (0x83)
+        0x81 | 0x83 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let dst = match read_rm(modrm_byte, wide) {
+                Ok(v) => sized(v, wide),
+                Err(()) => return true,
+            };
+            let imm = if opcode == 0x83 {
+                match read_imm8s() {
+                    Ok(v) => v as i64,
+                    Err(()) => return true,
+                }
+            }
+            else {
+                match read_imm32s() {
+                    Ok(v) => v as i64,
+                    Err(()) => return true,
+                }
+            };
+            if let Some(result) = group1_op(modrm_byte >> 3 & 7, dst, sized(imm, wide), wide) {
+                let _ = write_rm(modrm_byte, result, wide);
+            }
+            true
+        },
+
+        // test r/m, r
+        0x85 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let src = sized(read_reg64(modrm_reg(modrm_byte)), wide);
+            let dst = match read_rm(modrm_byte, wide) {
+                Ok(v) => sized(v, wide),
+                Err(()) => return true,
+            };
+            set_flags64_logical(sized(dst & src, wide));
             true
         },
 
@@ -267,6 +465,215 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // nop
+        0x90 => true,
+
+        // mov r/m8, r8 and r8, r/m8
+        0x88 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let value = read_reg8(modrm_reg(modrm_byte));
+            let _ = write_rm8(modrm_byte, value);
+            true
+        },
+        0x8A => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            match read_rm8(modrm_byte) {
+                Ok(v) => write_reg8(reg, v),
+                Err(()) => {},
+            }
+            true
+        },
+
+        // clc, stc, cmc, cli, sti, cld, std - identical in 64-bit mode
+        0xF8 => {
+            crate::cpu::instructions::instr_F8();
+            true
+        },
+        0xF9 => {
+            crate::cpu::instructions::instr_F9();
+            true
+        },
+        0xF5 => {
+            crate::cpu::instructions::instr_F5();
+            true
+        },
+        0xFA => {
+            crate::cpu::instructions::instr_FA();
+            true
+        },
+        0xFB => {
+            crate::cpu::instructions::instr_FB();
+            true
+        },
+        0xFC => {
+            crate::cpu::instructions::instr_FC();
+            true
+        },
+        0xFD => {
+            crate::cpu::instructions::instr_FD();
+            true
+        },
+
+        // group 3: test/not/neg/mul/imul/div/idiv
+        0xF6 | 0xF7 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let byte_op = opcode == 0xF6;
+            let op = modrm_byte >> 3 & 7;
+
+            let dst = if byte_op {
+                match read_rm8(modrm_byte) {
+                    Ok(v) => v as i8 as i64,
+                    Err(()) => return true,
+                }
+            }
+            else {
+                match read_rm(modrm_byte, wide) {
+                    Ok(v) => sized(v, wide),
+                    Err(()) => return true,
+                }
+            };
+
+            match op {
+                // test r/m, imm
+                0 | 1 => {
+                    let imm = if byte_op {
+                        match read_imm8s() {
+                            Ok(v) => v as i64,
+                            Err(()) => return true,
+                        }
+                    }
+                    else {
+                        match read_imm32s() {
+                            Ok(v) => v as i64,
+                            Err(()) => return true,
+                        }
+                    };
+                    set_flags64_logical(narrow(dst & imm, byte_op, wide));
+                },
+                // not: does not affect flags
+                2 => {
+                    let r = narrow(!dst, byte_op, wide);
+                    if byte_op {
+                        let _ = write_rm8(modrm_byte, r as i32);
+                    }
+                    else {
+                        let _ = write_rm(modrm_byte, r, wide);
+                    }
+                },
+                // neg: 0 - dst, with carry set when the operand was non-zero
+                3 => {
+                    let r = narrow(0i64.wrapping_sub(dst), byte_op, wide);
+                    set_flags64(0, dst, r, true);
+                    if byte_op {
+                        let _ = write_rm8(modrm_byte, r as i32);
+                    }
+                    else {
+                        let _ = write_rm(modrm_byte, r, wide);
+                    }
+                },
+                _ => {
+                    dbg_log!("Unimplemented: 64-bit group3 op {}", op);
+                    return false;
+                },
+            }
+            true
+        },
+
+        // mov r/m, imm32 sign extended (0xC7) or imm8 (0xC6)
+        0xC6 | 0xC7 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            if modrm_byte >> 3 & 7 != 0 {
+                return false;
+            }
+            if opcode == 0xC6 {
+                let imm = match read_imm8() {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                };
+                if modrm_byte >= 0xC0 {
+                    write_reg8(modrm_rm(modrm_byte), imm);
+                }
+                else {
+                    match resolve_modrm64(modrm_byte) {
+                        Ok(addr) => {
+                            let _ = safe_write8(addr, imm);
+                        },
+                        Err(()) => {},
+                    }
+                }
+            }
+            else {
+                let imm = match read_imm32s() {
+                    Ok(v) => v as i64,
+                    Err(()) => return true,
+                };
+                let _ = write_rm(modrm_byte, sized(imm, wide), wide);
+            }
+            true
+        },
+
+        // jmp rel8 / rel32
+        0xEB | 0xE9 => {
+            let offset = if opcode == 0xEB { read_imm8s() } else { read_imm32s() };
+            match offset {
+                Ok(v) => *instruction_pointer = (*instruction_pointer).wrapping_add(v),
+                Err(()) => {},
+            }
+            true
+        },
+
+        // call rel32. Near calls are always 64 bits wide in long mode
+        0xE8 => {
+            match read_imm32s() {
+                Ok(v) => {
+                    let return_address = *instruction_pointer as i64;
+                    if push64(return_address).is_ok() {
+                        *instruction_pointer = (*instruction_pointer).wrapping_add(v);
+                    }
+                },
+                Err(()) => {},
+            }
+            true
+        },
+
+        // ret
+        0xC3 => {
+            match pop64() {
+                Ok(target) => match truncate_address(target) {
+                    Ok(a) => *instruction_pointer = a,
+                    Err(()) => {},
+                },
+                Err(()) => {},
+            }
+            true
+        },
+
+        // jcc rel8
+        0x70..=0x7F => {
+            match read_imm8s() {
+                Ok(offset) => {
+                    if test_condition(opcode & 0xF) {
+                        *instruction_pointer = (*instruction_pointer).wrapping_add(offset);
+                    }
+                },
+                Err(()) => {},
+            }
+            true
+        },
+
         // lea r, m
         0x8D => {
             let modrm_byte = match read_imm8() {
@@ -308,10 +715,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
-        _ => {
-            let _ = narrow;
-            false
-        },
+        _ => false,
     }
 }
 
