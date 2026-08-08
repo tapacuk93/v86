@@ -247,10 +247,10 @@ pub const EFER_SCE: i32 = 1 << 0;
 pub const EFER_LME: i32 = 1 << 8;
 pub const EFER_LMA: i32 = 1 << 10;
 pub const EFER_NXE: i32 = 1 << 11;
-/// Long mode (lme/lma) and syscall (sce) are not implemented, so nxe is the only bit a guest may
-/// set. Writing any other bit raises #gp, which is also what real hardware does for the reserved
-/// ones.
-pub const EFER_WRITABLE_MASK: i32 = EFER_NXE;
+/// lma is set by hardware rather than by the guest, and syscall (sce) is not implemented, so
+/// writing either raises #gp along with the reserved bits.
+pub const EFER_WRITABLE_MASK: i32 =
+    EFER_NXE | if config::ENABLE_LONG_MODE { EFER_LME } else { 0 };
 
 pub const IA32_APIC_BASE_BSP: i32 = 1 << 8;
 pub const IA32_APIC_BASE_EXTD: i32 = 1 << 10;
@@ -2060,9 +2060,32 @@ pub unsafe fn translate_address_write_and_can_skip_dirty(address: i32) -> OrPage
 // - 2 bits PDPT | 9 bits PD | 9 bits PT | 12 bits offset
 // - 2 bits PDPT | 9 bits PD | 21 bits offset (2MB huge page)
 //
+// 4-level paging (long mode):
+// - 9 bits PML4 | 9 bits PDPT | 9 bits PD | 9 bits PT | 12 bits offset
+// - 9 bits PML4 | 9 bits PDPT | 9 bits PD | 21 bits offset (2MB huge page)
+//
 // Note that PAE entries are 64-bit, and can describe physical addresses over 32
 // bits. However, since we support only 32-bit physical addresses, we require
 // the high half of the entry to be 0.
+/// True while the cpu is in ia-32e mode, i.e. cr0.pg was set while efer.lme was
+pub unsafe fn long_mode_active() -> bool {
+    config::ENABLE_LONG_MODE && 0 != *efer & EFER_LMA
+}
+
+/// Apply the nx bit of one 64-bit paging structure entry. Returns true if the entry is malformed
+/// and the caller should raise a page fault with the reserved bit set, which is what bit 63 means
+/// while efer.nxe is clear.
+unsafe fn check_paging_entry_nx(entry: i64, nxe: bool, allow_exec: &mut bool) -> bool {
+    if 0 == entry as u64 & PAGE_TABLE_NX_MASK {
+        return false;
+    }
+    if !nxe {
+        return true;
+    }
+    *allow_exec = false;
+    false
+}
+
 #[cold]
 pub unsafe fn do_page_walk(
     addr: i32,
@@ -2088,6 +2111,9 @@ pub unsafe fn do_page_walk(
     // The i/d bit of the page fault error code is only meaningful when nx (or smep) can cause a
     // fault on instruction fetch
     let fetch = for_exec && nxe;
+    let long_mode = long_mode_active();
+    // Permissions of the levels above the page directory, which only 4-level paging has
+    let mut allow_write_upper = true;
 
     if cr0 & CR0_PG == 0 {
         // paging disabled
@@ -2097,7 +2123,70 @@ pub unsafe fn do_page_walk(
     else {
         profiler::stat_increment(stat::TLB_MISS);
 
-        let (page_dir_addr, page_dir_entry) = if pae {
+        let (page_dir_addr, page_dir_entry) = if long_mode {
+            // Addresses are 32-bit throughout v86, so only the low 4 GiB of the virtual address
+            // space is reachable and the pml4 index is always 0. Reaching the rest of the
+            // canonical address space needs a wider address type and a tlb that isn't directly
+            // indexed by page number.
+            let pml4_entry_addr = *cr.offset(3) as u32 & 0xFFFFF000;
+            let pml4_entry = memory::read64s(pml4_entry_addr);
+
+            if pml4_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0 {
+                if side_effects {
+                    trigger_pagefault(addr, false, for_writing, user, fetch, false, jit);
+                }
+                return Err(());
+            }
+            if check_paging_entry_nx(pml4_entry, nxe, &mut allow_exec) {
+                if side_effects {
+                    trigger_pagefault(addr, true, for_writing, user, fetch, true, jit);
+                }
+                return Err(());
+            }
+            allow_write_upper &= pml4_entry as i32 & PAGE_TABLE_RW_MASK != 0;
+            allow_user &= pml4_entry as i32 & PAGE_TABLE_USER_MASK != 0;
+
+            let pdpt_entry_addr =
+                (pml4_entry as u32 & 0xFFFFF000) + ((((addr as u32) >> 30) & 0x1FF) << 3);
+            let pdpt_entry = memory::read64s(pdpt_entry_addr);
+
+            if pdpt_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0 {
+                if side_effects {
+                    trigger_pagefault(addr, false, for_writing, user, fetch, false, jit);
+                }
+                return Err(());
+            }
+            if check_paging_entry_nx(pdpt_entry, nxe, &mut allow_exec) {
+                if side_effects {
+                    trigger_pagefault(addr, true, for_writing, user, fetch, true, jit);
+                }
+                return Err(());
+            }
+            dbg_assert!(
+                pdpt_entry as i32 & PAGE_TABLE_PSE_MASK == 0,
+                "Unsupported: 1 GiB pages"
+            );
+            allow_write_upper &= pdpt_entry as i32 & PAGE_TABLE_RW_MASK != 0;
+            allow_user &= pdpt_entry as i32 & PAGE_TABLE_USER_MASK != 0;
+
+            let page_dir_addr =
+                (pdpt_entry as u32 & 0xFFFFF000) + ((((addr as u32) >> 21) & 0x1FF) << 3);
+            let page_dir_entry = memory::read64s(page_dir_addr);
+            dbg_assert!(
+                page_dir_entry as u64 & 0x7FFF_FFFF_0000_0000 == 0,
+                "Unsupported: Page directory entry larger than 32 bits"
+            );
+
+            if check_paging_entry_nx(page_dir_entry, nxe, &mut allow_exec) {
+                if side_effects {
+                    trigger_pagefault(addr, true, for_writing, user, fetch, true, jit);
+                }
+                return Err(());
+            }
+
+            (page_dir_addr, page_dir_entry as i32)
+        }
+        else if pae {
             let pdpt_entry = *reg_pdpte.offset(((addr as u32) >> 30) as isize);
             if pdpt_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0 {
                 if side_effects {
@@ -2114,15 +2203,11 @@ pub unsafe fn do_page_walk(
                 "Unsupported: Page directory entry larger than 32 bits"
             );
 
-            if 0 != page_dir_entry as u64 & PAGE_TABLE_NX_MASK {
-                if !nxe {
-                    // bit 63 is reserved while nxe is clear
-                    if side_effects {
-                        trigger_pagefault(addr, true, for_writing, user, fetch, true, jit);
-                    }
-                    return Err(());
+            if check_paging_entry_nx(page_dir_entry, nxe, &mut allow_exec) {
+                if side_effects {
+                    trigger_pagefault(addr, true, for_writing, user, fetch, true, jit);
                 }
-                allow_exec = false;
+                return Err(());
             }
 
             (page_dir_addr, page_dir_entry as i32)
@@ -2141,10 +2226,13 @@ pub unsafe fn do_page_walk(
         }
 
         let kernel_write_override = !user && 0 == cr0 & CR0_WP;
-        let mut allow_write = page_dir_entry & PAGE_TABLE_RW_MASK != 0;
+        let mut allow_write = allow_write_upper && page_dir_entry & PAGE_TABLE_RW_MASK != 0;
         allow_user &= page_dir_entry & PAGE_TABLE_USER_MASK != 0;
 
-        if 0 != page_dir_entry & PAGE_TABLE_PSE_MASK && 0 != cr4 & CR4_PSE {
+        // cr4.pse gates 4 MiB pages in 32-bit paging only. It is ignored in long mode, where the
+        // size bit is always in effect. (It is architecturally ignored under pae as well, but
+        // that is left alone here so this change can't affect existing pae guests.)
+        if 0 != page_dir_entry & PAGE_TABLE_PSE_MASK && (long_mode || 0 != cr4 & CR4_PSE) {
             // size bit is set
 
             if for_writing && !allow_write && !kernel_write_override
@@ -2185,15 +2273,11 @@ pub unsafe fn do_page_walk(
                     "Unsupported: Page table entry larger than 32 bits"
                 );
 
-                if 0 != page_table_entry as u64 & PAGE_TABLE_NX_MASK {
-                    if !nxe {
-                        // bit 63 is reserved while nxe is clear
-                        if side_effects {
-                            trigger_pagefault(addr, true, for_writing, user, fetch, true, jit);
-                        }
-                        return Err(());
+                if check_paging_entry_nx(page_table_entry, nxe, &mut allow_exec) {
+                    if side_effects {
+                        trigger_pagefault(addr, true, for_writing, user, fetch, true, jit);
                     }
-                    allow_exec = false;
+                    return Err(());
                 }
 
                 (page_table_addr, page_table_entry as i32)
@@ -2907,7 +2991,30 @@ pub unsafe fn set_cr0(cr0: i32) {
         full_clear_tlb();
     }
 
+    // Enabling paging while efer.lme is set activates ia-32e mode, and disabling it leaves again.
+    // lma is read-only to the guest and only ever changes here.
+    if config::ENABLE_LONG_MODE
+        && 0 != *efer & EFER_LME
+        && old_cr0 & CR0_PG != cr0 & CR0_PG
+    {
+        if cr0 & CR0_PG != 0 {
+            dbg_assert!(
+                *cr.offset(4) & CR4_PAE != 0,
+                "TODO: #gp enabling paging with lme but without pae"
+            );
+            dbg_log!("Entering long mode");
+            *efer |= EFER_LMA;
+        }
+        else {
+            dbg_log!("Leaving long mode");
+            *efer &= !EFER_LMA;
+        }
+    }
+
+    // In long mode cr3 is the address of the pml4 rather than of a page directory pointer table,
+    // so there are no pdptes to cache
     if *cr.offset(4) & CR4_PAE != 0
+        && !long_mode_active()
         && old_cr0 & (CR0_CD | CR0_NW | CR0_PG) != cr0 & (CR0_CD | CR0_NW | CR0_PG)
     {
         load_pdpte(*cr.offset(3))
@@ -2921,7 +3028,11 @@ pub unsafe fn set_cr3(mut cr3: i32) {
     if false {
         dbg_log!("cr3 <- {:x}", cr3);
     }
-    if *cr.offset(4) & CR4_PAE != 0 {
+    if long_mode_active() {
+        // cr3 holds the pml4 address, which is read during the page walk rather than cached
+        cr3 &= !0xFFF;
+    }
+    else if *cr.offset(4) & CR4_PAE != 0 {
         cr3 &= !0b1111;
         load_pdpte(cr3);
     }
