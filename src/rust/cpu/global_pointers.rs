@@ -33,6 +33,8 @@ pub const last_virt_eip: *mut i32 = 620 as *mut i32;
 pub const eip_phys: *mut i32 = 624 as *mut i32;
 /// IA32_EFER. Only the low 32 bits are stored, the high half is always 0
 pub const efer: *mut i32 = 628 as *mut i32;
+/// Whether cs has the l bit set, i.e. the cpu is in 64-bit mode rather than compatibility mode
+pub const is_64: *mut bool = 632 as *mut bool;
 
 pub const sysenter_cs: *mut i32 = 636 as *mut i32;
 pub const sysenter_esp: *mut i32 = 640 as *mut i32;
