@@ -4,9 +4,13 @@ use crate::cpu::cpu::reg128;
 use crate::softfloat::F80;
 use crate::state_flags::CachedStateFlags;
 
-pub const reg8: *mut u8 = 64 as *mut u8;
-pub const reg16: *mut u16 = 64 as *mut u16;
-pub const reg32: *mut i32 = 64 as *mut i32;
+// The general purpose registers are stored 64 bits wide, with room for r8-r15, even though only
+// the low half of the low 8 is reachable so far. All the 8, 16 and 32 bit views alias this, so
+// their strides are 8 bytes rather than the register width. See get_reg8_index and friends.
+pub const reg64: *mut i64 = 128 as *mut i64; // 16 64-bit entries
+pub const reg8: *mut u8 = 128 as *mut u8;
+pub const reg16: *mut u16 = 128 as *mut u16;
+pub const reg32: *mut i32 = 128 as *mut i32;
 
 pub const last_op_size: *mut i32 = 96 as *mut i32;
 pub const flags_changed: *mut i32 = 100 as *mut i32;
@@ -80,8 +84,13 @@ pub const fpu_st: *mut F80 = 1152 as *mut F80;
 
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);
-    (unsafe { reg32.offset(r as isize) }) as u32
+    // The low half of the 64-bit register, which is what the 32-bit jit loads and stores. Still
+    // 4-byte aligned, since the stride is 8.
+    (unsafe { reg32.offset(get_reg32_index(r as i32) as isize) }) as u32
 }
+
+/// 32-bit views of the register file, in i32 units
+pub fn get_reg32_index(index: i32) -> i32 { index << 1 }
 
 pub fn get_reg_mmx_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);

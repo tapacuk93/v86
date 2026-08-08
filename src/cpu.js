@@ -175,8 +175,9 @@ export function CPU(bus, wm, stop_idling)
 
     this.instruction_counter = view(Uint32Array, memory, 664, 1);
 
-    // registers
-    this.reg32 = view(Int32Array, memory, 64, 8);
+    // registers. Stored 64 bits wide with room for r8-r15; the 32-bit halves are every other
+    // entry. Use get_reg32/set_reg32 rather than indexing this directly.
+    this.reg64 = view(Int32Array, memory, 128, 32);
 
     this.fpu_st = view(Int32Array, memory, 1152, 4 * 8);
 
@@ -460,6 +461,33 @@ CPU.prototype.jit_clear_all_funcs = function()
     }
 };
 
+/**
+ * Low 32 bits of general purpose register `i`
+ * @param {number} i
+ * @return {number}
+ */
+CPU.prototype.get_reg32 = function(i)
+{
+    return this.reg64[i << 1];
+};
+
+/**
+ * @param {number} i
+ * @param {number} value
+ */
+CPU.prototype.set_reg32 = function(i, value)
+{
+    this.reg64[i << 1] = value;
+};
+
+/** @return {Int32Array} */
+CPU.prototype.get_reg32_array = function()
+{
+    const result = new Int32Array(8);
+    for(let i = 0; i < 8; i++) result[i] = this.get_reg32(i);
+    return result;
+};
+
 CPU.prototype.get_state = function()
 {
     var state = [];
@@ -496,7 +524,7 @@ CPU.prototype.get_state = function()
 
     state[37] = this.instruction_pointer[0];
     state[38] = this.previous_ip[0];
-    state[39] = this.reg32;
+    state[39] = this.get_reg32_array();
     state[40] = this.sreg;
     state[41] = this.dreg;
     state[42] = this.reg_pdpte;
@@ -689,7 +717,7 @@ CPU.prototype.set_state = function(state)
 
     this.instruction_pointer[0] = state[37];
     this.previous_ip[0] = state[38];
-    this.reg32.set(state[39]);
+    for(let i = 0; i < 8; i++) this.set_reg32(i, state[39][i]);
     this.sreg.set(state[40]);
     this.dreg.set(state[41]);
     state[42] && this.reg_pdpte.set(state[42]);
@@ -1281,7 +1309,7 @@ CPU.prototype.init = function(settings, device_bus)
             else
             {
                 dbg_log("loaded multiboot without bios", LOG_CPU);
-                this.reg32[REG_EAX] = this.io.port_read32(0xF4);
+                this.set_reg32(REG_EAX, this.io.port_read32(0xF4));
             }
         }
     }
@@ -1300,7 +1328,7 @@ CPU.prototype.load_multiboot = function (buffer)
     if(option_rom)
     {
         dbg_log("loaded multiboot", LOG_CPU);
-        this.reg32[REG_EAX] = this.io.port_read32(0xF4);
+        this.set_reg32(REG_EAX, this.io.port_read32(0xF4));
     }
 };
 
@@ -1551,7 +1579,7 @@ CPU.prototype.load_multiboot_option_rom = function(buffer, initrd, cmdline)
 
             // set state for multiboot
 
-            cpu.reg32[REG_EBX] = multiboot_info_addr;
+            cpu.set_reg32(REG_EBX, multiboot_info_addr);
             cpu.cr[0] = 1;
             cpu.protected_mode[0] = +true;
             cpu.flags[0] = FLAGS_DEFAULT;
@@ -1969,7 +1997,7 @@ CPU.prototype.dump_stack = function(start, end)
 {
     if(!DEBUG) return;
 
-    var esp = this.reg32[REG_ESP];
+    var esp = this.get_reg32(REG_ESP);
     dbg_log("========= STACK ==========");
 
     if(end >= start || end === undefined)
@@ -2001,7 +2029,7 @@ CPU.prototype.debug_get_state = function(where)
     var iopl = this.getiopl();
     var cpl = this.cpl[0];
     var cs_eip = h(this.sreg[REG_CS], 4) + ":" + h(this.get_real_eip() >>> 0, 8);
-    var ss_esp = h(this.sreg[REG_SS], 4) + ":" + h(this.reg32[REG_ES] >>> 0, 8);
+    var ss_esp = h(this.sreg[REG_SS], 4) + ":" + h(this.get_reg32(REG_ES) >>> 0, 8);
     var op_size = this.is_32[0] ? "32" : "16";
     var if_ = (this.flags[0] & FLAG_INTERRUPT) ? 1 : 0;
 
@@ -2066,8 +2094,8 @@ CPU.prototype.get_regs_short = function()
 
     for(var i = 0; i < 4; i++)
     {
-        line1 += r32_names[i] + "="  + h(this.reg32[r32[r32_names[i]]] >>> 0, 8) + " ";
-        line2 += r32_names[i+4] + "="  + h(this.reg32[r32[r32_names[i+4]]] >>> 0, 8) + " ";
+        line1 += r32_names[i] + "="  + h(this.get_reg32(r32[r32_names[i]]) >>> 0, 8) + " ";
+        line2 += r32_names[i+4] + "="  + h(this.get_reg32(r32[r32_names[i+4]]) >>> 0, 8) + " ";
     }
 
     //line1 += " eip=" + h(this.get_real_eip() >>> 0, 8);

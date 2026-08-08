@@ -28,28 +28,28 @@
     (local $l0 i32) (local $l1 i32) (local $l2 i32) (local $l3 i32) (local $l4 i32) (local $l5 i32) (local $l6 i32) (local $l7 i32) (local $l8 i32) (local $l9 i32) (local $l10 i32) (local $l11 i32)
     (set_local $l0
       (i32.load
-        (i32.const 64)))
+        (i32.const 128)))
     (set_local $l1
       (i32.load
-        (i32.const 68)))
+        (i32.const 136)))
     (set_local $l2
       (i32.load
-        (i32.const 72)))
+        (i32.const 144)))
     (set_local $l3
       (i32.load
-        (i32.const 76)))
+        (i32.const 152)))
     (set_local $l4
       (i32.load
-        (i32.const 80)))
+        (i32.const 160)))
     (set_local $l5
       (i32.load
-        (i32.const 84)))
+        (i32.const 168)))
     (set_local $l6
       (i32.load
-        (i32.const 88)))
+        (i32.const 176)))
     (set_local $l7
       (i32.load
-        (i32.const 92)))
+        (i32.const 184)))
     (set_local $l8
       (i32.const 0))
     (block $B0
@@ -127,79 +127,79 @@
                   (i32.const -4096))
                 (i32.const 2)))
             (i32.store
-              (i32.const 64)
+              (i32.const 128)
               (get_local $l0))
             (i32.store
-              (i32.const 68)
+              (i32.const 136)
               (get_local $l1))
             (i32.store
-              (i32.const 72)
+              (i32.const 144)
               (get_local $l2))
             (i32.store
-              (i32.const 76)
+              (i32.const 152)
               (get_local $l3))
             (i32.store
-              (i32.const 80)
+              (i32.const 160)
               (get_local $l4))
             (i32.store
-              (i32.const 84)
+              (i32.const 168)
               (get_local $l5))
             (i32.store
-              (i32.const 88)
+              (i32.const 176)
               (get_local $l6))
             (i32.store
-              (i32.const 92)
+              (i32.const 184)
               (get_local $l7))
             (call $e.instr_F4)
             (set_local $l0
               (i32.load
-                (i32.const 64)))
+                (i32.const 128)))
             (set_local $l1
               (i32.load
-                (i32.const 68)))
+                (i32.const 136)))
             (set_local $l2
               (i32.load
-                (i32.const 72)))
+                (i32.const 144)))
             (set_local $l3
               (i32.load
-                (i32.const 76)))
+                (i32.const 152)))
             (set_local $l4
               (i32.load
-                (i32.const 80)))
+                (i32.const 160)))
             (set_local $l5
               (i32.load
-                (i32.const 84)))
+                (i32.const 168)))
             (set_local $l6
               (i32.load
-                (i32.const 88)))
+                (i32.const 176)))
             (set_local $l7
               (i32.load
-                (i32.const 92)))
+                (i32.const 184)))
             (br $B0))
           (unreachable)))
       (i32.store
-        (i32.const 64)
+        (i32.const 128)
         (get_local $l0))
       (i32.store
-        (i32.const 68)
+        (i32.const 136)
         (get_local $l1))
       (i32.store
-        (i32.const 72)
+        (i32.const 144)
         (get_local $l2))
       (i32.store
-        (i32.const 76)
+        (i32.const 152)
         (get_local $l3))
       (i32.store
-        (i32.const 80)
+        (i32.const 160)
         (get_local $l4))
       (i32.store
-        (i32.const 84)
+        (i32.const 168)
         (get_local $l5))
       (i32.store
-        (i32.const 88)
+        (i32.const 176)
         (get_local $l6))
       (i32.store
-        (i32.const 92)
+        (i32.const 184)
         (get_local $l7))
       (call $e.exit_jit)
       (i32.store
@@ -210,28 +210,28 @@
           (get_local $l8)))
       (return))
     (i32.store
-      (i32.const 64)
+      (i32.const 128)
       (get_local $l0))
     (i32.store
-      (i32.const 68)
+      (i32.const 136)
       (get_local $l1))
     (i32.store
-      (i32.const 72)
+      (i32.const 144)
       (get_local $l2))
     (i32.store
-      (i32.const 76)
+      (i32.const 152)
       (get_local $l3))
     (i32.store
-      (i32.const 80)
+      (i32.const 160)
       (get_local $l4))
     (i32.store
-      (i32.const 84)
+      (i32.const 168)
       (get_local $l5))
     (i32.store
-      (i32.const 88)
+      (i32.const 176)
       (get_local $l6))
     (i32.store
-      (i32.const 92)
+      (i32.const 184)
       (get_local $l7))
     (i32.store
       (i32.const 664)

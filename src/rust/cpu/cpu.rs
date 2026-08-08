@@ -4237,7 +4237,9 @@ pub unsafe fn safe_read_write32(addr: i32, instruction: &dyn Fn(i32) -> i32) {
     }
 }
 
-fn get_reg8_index(index: i32) -> i32 { return index << 2 & 12 | index >> 2 & 1; }
+// The registers are 8 bytes apart, so the low byte of each is at index * 8, and ah/ch/dh/bh are
+// the byte above al/cl/dl/bl
+fn get_reg8_index(index: i32) -> i32 { return index << 3 & 24 | index >> 2 & 1; }
 
 pub unsafe fn read_reg8(index: i32) -> i32 {
     dbg_assert!(index >= 0 && index < 8);
@@ -4249,7 +4251,7 @@ pub unsafe fn write_reg8(index: i32, value: i32) {
     *reg8.offset(get_reg8_index(index) as isize) = value as u8;
 }
 
-fn get_reg16_index(index: i32) -> i32 { return index << 1; }
+fn get_reg16_index(index: i32) -> i32 { return index << 2; }
 
 pub unsafe fn read_reg16(index: i32) -> i32 {
     dbg_assert!(index >= 0 && index < 8);
@@ -4263,12 +4265,12 @@ pub unsafe fn write_reg16(index: i32, value: i32) {
 
 pub unsafe fn read_reg32(index: i32) -> i32 {
     dbg_assert!(index >= 0 && index < 8);
-    *reg32.offset(index as isize)
+    *reg32.offset(get_reg32_index(index) as isize)
 }
 
 pub unsafe fn write_reg32(index: i32, value: i32) {
     dbg_assert!(index >= 0 && index < 8);
-    *reg32.offset(index as isize) = value;
+    *reg32.offset(get_reg32_index(index) as isize) = value;
 }
 
 pub unsafe fn read_mmx32s(r: i32) -> i32 { (*fpu_st.offset(r as isize)).mantissa as i32 }
@@ -4787,8 +4789,6 @@ pub unsafe fn reset_cpu() {
         *segment_offsets.offset(i) = 0;
         *segment_access_bytes.offset(i) = 0x80 | (0 << 5) | 0x10 | 0x02; // P dpl0 S RW
 
-        *reg32.offset(i) = 0;
-
         *sreg.offset(i) = 0;
         *dreg.offset(i) = 0;
 
@@ -4800,6 +4800,10 @@ pub unsafe fn reset_cpu() {
 
     for i in 0..4 {
         *reg_pdpte.offset(i) = 0
+    }
+
+    for i in 0..16 {
+        *reg64.offset(i) = 0;
     }
 
     *efer = 0;
