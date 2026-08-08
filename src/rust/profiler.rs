@@ -178,7 +178,12 @@ pub static mut timer_array: [f64; timer::LAST as usize] = [0.0; timer::LAST as u
 /// Milliseconds since an arbitrary origin, or 0 when the profiler is disabled. Note that this
 /// calls into javascript, so it must not be used per instruction.
 pub fn time_now() -> f64 {
-    if cfg!(feature = "profiler") { unsafe { crate::cpu::cpu::js::microtick() } } else { 0.0 }
+    if cfg!(feature = "profiler") {
+        unsafe { crate::cpu::cpu::js::microtick() }
+    }
+    else {
+        0.0
+    }
 }
 
 pub fn time_add(t: timer, start: f64) {
