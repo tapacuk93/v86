@@ -249,8 +249,7 @@ pub const EFER_LMA: i32 = 1 << 10;
 pub const EFER_NXE: i32 = 1 << 11;
 /// lma is set by hardware rather than by the guest, and syscall (sce) is not implemented, so
 /// writing either raises #gp along with the reserved bits.
-pub const EFER_WRITABLE_MASK: i32 =
-    EFER_NXE | if config::ENABLE_LONG_MODE { EFER_LME } else { 0 };
+pub const EFER_WRITABLE_MASK: i32 = EFER_NXE | if config::ENABLE_LONG_MODE { EFER_LME } else { 0 };
 
 pub const IA32_APIC_BASE_BSP: i32 = 1 << 8;
 pub const IA32_APIC_BASE_EXTD: i32 = 1 << 10;
@@ -2079,16 +2078,12 @@ pub unsafe fn translate_address_write_and_can_skip_dirty(address: i32) -> OrPage
 // bits. However, since we support only 32-bit physical addresses, we require
 // the high half of the entry to be 0.
 /// True while the cpu is in ia-32e mode, i.e. cr0.pg was set while efer.lme was
-pub unsafe fn long_mode_active() -> bool {
-    config::ENABLE_LONG_MODE && 0 != *efer & EFER_LMA
-}
+pub unsafe fn long_mode_active() -> bool { config::ENABLE_LONG_MODE && 0 != *efer & EFER_LMA }
 
 /// True once the guest has asked for long mode, which happens before it is actually entered: lme
 /// is set while paging is still off, and cr3 is loaded with the pml4 address before cr0.pg
 /// activates it. Anything deciding how to interpret cr3 has to use this rather than lma.
-pub unsafe fn long_mode_enabled() -> bool {
-    config::ENABLE_LONG_MODE && 0 != *efer & EFER_LME
-}
+pub unsafe fn long_mode_enabled() -> bool { config::ENABLE_LONG_MODE && 0 != *efer & EFER_LME }
 
 /// Apply the nx bit of one 64-bit paging structure entry. Returns true if the entry is malformed
 /// and the caller should raise a page fault with the reserved bit set, which is what bit 63 means
@@ -3011,10 +3006,7 @@ pub unsafe fn set_cr0(cr0: i32) {
 
     // Enabling paging while efer.lme is set activates ia-32e mode, and disabling it leaves again.
     // lma is read-only to the guest and only ever changes here.
-    if config::ENABLE_LONG_MODE
-        && 0 != *efer & EFER_LME
-        && old_cr0 & CR0_PG != cr0 & CR0_PG
-    {
+    if config::ENABLE_LONG_MODE && 0 != *efer & EFER_LME && old_cr0 & CR0_PG != cr0 & CR0_PG {
         if cr0 & CR0_PG != 0 {
             dbg_assert!(
                 *cr.offset(4) & CR4_PAE != 0,
