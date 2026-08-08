@@ -477,6 +477,13 @@ pub unsafe fn run(opcode: i32) -> bool {
         // nop
         0x90 => true,
 
+        // hlt
+        0xF4 => {
+            crate::cpu::instructions::instr_F4();
+            after_block_boundary();
+            true
+        },
+
         // mov r/m8, r8 and r8, r/m8
         0x88 => {
             let modrm_byte = match read_imm8() {
@@ -641,6 +648,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(v) => *instruction_pointer = (*instruction_pointer).wrapping_add(v),
                 Err(()) => {},
             }
+            after_block_boundary();
             true
         },
 
@@ -655,6 +663,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 },
                 Err(()) => {},
             }
+            after_block_boundary();
             true
         },
 
@@ -675,6 +684,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 },
                 Err(()) => {},
             }
+            after_block_boundary();
             true
         },
 
@@ -688,6 +698,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 },
                 Err(()) => {},
             }
+            after_block_boundary();
             true
         },
 
@@ -729,6 +740,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 }
             };
             switch_seg(seg, value);
+            after_block_boundary();
             true
         },
 
@@ -749,6 +761,7 @@ unsafe fn run_0f(opcode: i32, wide: bool) -> bool {
                 },
                 Err(()) => {},
             }
+            after_block_boundary();
             true
         },
 
@@ -889,6 +902,7 @@ pub unsafe fn run_ff(modrm_byte: i32) -> bool {
                 Ok(a) => *instruction_pointer = a,
                 Err(()) => {},
             }
+            after_block_boundary();
             true
         },
 
@@ -902,6 +916,7 @@ pub unsafe fn run_ff(modrm_byte: i32) -> bool {
                 Ok(a) => *instruction_pointer = a,
                 Err(()) => {},
             }
+            after_block_boundary();
             true
         },
 
