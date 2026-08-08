@@ -1213,6 +1213,20 @@ pub unsafe fn instr_0F30() {
             dbg_assert!(low & IA32_APIC_BASE_EXTD == 0, "x2apic not supported");
             *apic_enabled = low & IA32_APIC_BASE_EN == IA32_APIC_BASE_EN
         },
+        IA32_EFER => {
+            dbg_assert!(high == 0, "Unsupported: efer high bits");
+            if low & !EFER_WRITABLE_MASK != 0 {
+                dbg_log!("#gp writing reserved/unsupported efer bits: {:x}", low);
+                trigger_gp(0);
+                return;
+            }
+            // The nx bit of paging structure entries is only interpreted when nxe is set, so
+            // cached translations computed under the old setting have to be discarded
+            if 0 != (*efer ^ low) & EFER_NXE {
+                full_clear_tlb();
+            }
+            *efer = low & EFER_WRITABLE_MASK;
+        },
         IA32_TIME_STAMP_COUNTER => set_tsc(low as u32, high as u32),
         IA32_BIOS_UPDT_TRIG => {}, // windows xp
         IA32_BIOS_SIGN_ID => {},
@@ -1281,6 +1295,7 @@ pub unsafe fn instr_0F32() {
             low = tsc as i32;
             high = (tsc >> 32) as i32
         },
+        IA32_EFER => low = *efer,
         IA32_FEAT_CTL => {}, // linux 5.x
         MSR_TEST_CTRL => {}, // linux 5.x
         IA32_PLATFORM_ID => {},
@@ -3314,9 +3329,29 @@ pub unsafe fn instr_0FA2() {
 
         0x80000000 => {
             // maximum supported extended level
-            eax = 5;
+            eax = 0x80000004u32 as i32;
             // other registers are reserved
         },
+
+        0x80000001 => {
+            // extended processor signature and feature bits
+            // eax (extended family/model/stepping) is reserved on intel
+            edx = 1 << 20; // nx
+        },
+
+        // processor brand string, 48 bytes over three leaves, nul-padded
+        0x80000002 => {
+            eax = 0x65746E49u32 as i32; // Inte
+            ebx = 0x2952286Cu32 as i32; // l(R)
+            ecx = 0x6E655020u32 as i32; // " Pen"
+            edx = 0x6D756974u32 as i32; // tium
+        },
+        0x80000003 => {
+            eax = 0x20295228u32 as i32; // "(R) "
+            ebx = 0x20494949u32 as i32; // "III "
+            ecx = 0x00555043u32 as i32; // CPU
+        },
+        0x80000004 => {},
 
         0x40000000 => {
             // hypervisor
