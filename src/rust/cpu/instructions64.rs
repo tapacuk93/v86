@@ -69,6 +69,15 @@ unsafe fn modrm_rm(modrm_byte: i32) -> i32 { (modrm_byte & 7) | rex_bit(REX_B) }
 /// registers, rm=101 with mod=00 is rip relative rather than an absolute disp32, and there is no
 /// 16-bit form.
 unsafe fn resolve_modrm64(modrm_byte: i32) -> OrPageFault<i32> {
+    truncate_address(resolve_modrm64_address(modrm_byte)?)
+}
+
+/// The effective address a modrm byte describes, without checking whether v86 can reach it.
+///
+/// lea wants this: it computes an address and puts it in a register without touching memory, so
+/// neither the 4 GiB limit nor a fault applies to it. Everything that does access memory goes
+/// through resolve_modrm64, which checks.
+unsafe fn resolve_modrm64_address(modrm_byte: i32) -> OrPageFault<i64> {
     dbg_assert!(modrm_byte < 0xC0);
 
     let m = modrm_byte >> 6 & 3;
@@ -116,7 +125,7 @@ unsafe fn resolve_modrm64(modrm_byte: i32) -> OrPageFault<i32> {
         addr += read_imm32s()? as i64;
     }
 
-    truncate_address(addr)
+    Ok(addr)
 }
 
 /// Push in 64-bit mode, where the stack is always 64 bits wide and the stack segment has no base
@@ -1271,8 +1280,8 @@ pub unsafe fn run(opcode: i32) -> bool {
                 return false;
             }
             let reg = modrm_reg(modrm_byte);
-            match resolve_modrm64(modrm_byte) {
-                Ok(addr) => write_reg_sized(reg, addr as u32 as i64, osize),
+            match resolve_modrm64_address(modrm_byte) {
+                Ok(addr) => write_reg_sized(reg, addr, osize),
                 Err(()) => {},
             }
             true
