@@ -32,6 +32,7 @@ fn truncate_address(addr: i64) -> OrPageFault<i32> {
 /// where that size puts it. `osize` is 16, 32 or 64.
 fn sized(value: i64, osize: i32) -> i64 {
     match osize {
+        8 => value as i8 as i64,
         16 => value as i16 as i64,
         32 => value as i32 as i64,
         _ => value,
@@ -245,11 +246,9 @@ unsafe fn group1_op(op: i32, dst: i64, src: i64, osize: i32) -> Option<i64> {
                 check_lazy_flags64(dst, src, r, true);
                 None
             },
-            _ => {
-                dbg_log!("Unimplemented: 64-bit adc/sbb");
-                dbg_assert!(false, "Unimplemented: 64-bit adc/sbb");
-                None
-            },
+            2 => Some(adc_sbb(dst, src, osize, false)),
+            3 => Some(adc_sbb(dst, src, osize, true)),
+            _ => None,
         };
     }
     match op {
@@ -284,12 +283,9 @@ unsafe fn group1_op(op: i32, dst: i64, src: i64, osize: i32) -> Option<i64> {
             set_flags64(dst, src, r, true);
             None
         },
-        // adc and sbb need the incoming carry, which is fine, but they are not needed yet
-        _ => {
-            dbg_log!("Unimplemented: 64-bit group1 op {}", op);
-            dbg_assert!(false, "Unimplemented: 64-bit adc/sbb");
-            None
-        },
+        2 => Some(adc_sbb(dst, src, osize, false)),
+        3 => Some(adc_sbb(dst, src, osize, true)),
+        _ => None,
     }
 }
 
@@ -498,6 +494,58 @@ unsafe fn sse_delegate(
     true
 }
 
+/// adc and sbb at any operand size. They need the incoming carry, so carry, adjust and overflow
+/// are worked out here, as the 32-bit versions do, and sign, zero and parity are left lazy.
+unsafe fn adc_sbb(dst: i64, src: i64, osize: i32, is_sub: bool) -> i64 {
+    let cf = getcf() as i64;
+    let result = if is_sub {
+        sized(dst.wrapping_sub(src).wrapping_sub(cf), osize)
+    }
+    else {
+        sized(dst.wrapping_add(src).wrapping_add(cf), osize)
+    };
+
+    // With the carry folded in, comparing the operands no longer answers the question, so carry
+    // and overflow come from the sign algebra. The two are not symmetric: see adc and sbb in
+    // arith.rs, whose formulas these mirror.
+    let sign = osize - 1;
+    let (carry, overflow) = if is_sub {
+        (
+            ((result ^ ((result ^ src) & (src ^ dst))) >> sign) & 1,
+            (((src ^ dst) & (result ^ dst)) >> sign) & 1,
+        )
+    }
+    else {
+        (
+            ((dst ^ ((dst ^ src) & (src ^ result))) >> sign) & 1,
+            (((src ^ result) & (dst ^ result)) >> sign) & 1,
+        )
+    };
+    let adjust = (dst ^ src ^ result) & FLAG_ADJUST as i64;
+
+    if osize == 64 {
+        *last_op1_64 = dst;
+        *last_result_64 = result;
+        *last_op_size = OPSIZE_64;
+    }
+    else {
+        *last_op1 = dst as i32;
+        *last_result = result as i32;
+        *last_op_size = match osize {
+            8 => OPSIZE_8,
+            16 => OPSIZE_16,
+            _ => OPSIZE_32,
+        };
+    }
+    *flags_changed =
+        FLAGS_ALL & !FLAG_CARRY & !FLAG_ADJUST & !FLAG_OVERFLOW | if is_sub { FLAG_SUB } else { 0 };
+    *flags = *flags & !FLAG_CARRY & !FLAG_ADJUST & !FLAG_OVERFLOW
+        | (carry as i32) & FLAG_CARRY
+        | (adjust as i32) & FLAG_ADJUST
+        | ((overflow as i32) << 11) & FLAG_OVERFLOW;
+    result
+}
+
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
 /// opcode isn't implemented yet, in which case the caller reports it.
 pub unsafe fn run(opcode: i32) -> bool {
@@ -546,6 +594,97 @@ pub unsafe fn run(opcode: i32) -> bool {
             let dst = sized(read_reg64(reg), osize);
             if let Some(result) = group1_op(opcode >> 3 & 7, dst, src, osize) {
                 write_reg_sized(reg, result, osize);
+            }
+            true
+        },
+
+        // byte forms of `op r/m8, r8` and `op r8, r/m8`
+        0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38 | 0x02 | 0x0A | 0x12 | 0x1A
+        | 0x22 | 0x2A | 0x32 | 0x3A => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            let rm = match read_rm8(modrm_byte) {
+                Ok(v) => v as i8 as i64,
+                Err(()) => return true,
+            };
+            let r = read_reg8(reg) as i8 as i64;
+            // bit 1 of the opcode picks the direction
+            let to_reg = 0 != opcode & 2;
+            let (dst, src) = if to_reg { (r, rm) } else { (rm, r) };
+            match group1_op(opcode >> 3 & 7, dst, src, 8) {
+                Some(result) => {
+                    if to_reg {
+                        write_reg8(reg, result as i32);
+                    }
+                    else {
+                        let _ = write_rm8(modrm_byte, result as i32);
+                    }
+                },
+                None => {},
+            }
+            true
+        },
+
+        // group1 with a byte operand and a byte immediate
+        0x80 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let dst = match read_rm8(modrm_byte) {
+                Ok(v) => v as i8 as i64,
+                Err(()) => return true,
+            };
+            let imm = match read_imm8s() {
+                Ok(v) => v as i64,
+                Err(()) => return true,
+            };
+            match group1_op(modrm_byte >> 3 & 7, dst, imm, 8) {
+                Some(result) => {
+                    let _ = write_rm8(modrm_byte, result as i32);
+                },
+                None => {},
+            }
+            true
+        },
+
+        // `op AL, imm8`, the byte accumulator forms
+        0x04 | 0x0C | 0x14 | 0x1C | 0x24 | 0x2C | 0x34 | 0x3C => {
+            let imm = match read_imm8s() {
+                Ok(v) => v as i64,
+                Err(()) => return true,
+            };
+            let dst = read_reg8(0) as i8 as i64;
+            if let Some(result) = group1_op(opcode >> 3 & 7, dst, imm, 8) {
+                write_reg8(0, result as i32);
+            }
+            true
+        },
+
+        // adc and sbb at the wider sizes, which share the group1 encodings
+        0x11 | 0x19 | 0x13 | 0x1B => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let to_reg = 0 != opcode & 2;
+            let reg = modrm_reg(modrm_byte);
+            let rm = match read_rm(modrm_byte, osize) {
+                Ok(v) => sized(v, osize),
+                Err(()) => return true,
+            };
+            let r = sized(read_reg64(reg), osize);
+            let (dst, src) = if to_reg { (r, rm) } else { (rm, r) };
+            if let Some(result) = group1_op(opcode >> 3 & 7, dst, src, osize) {
+                if to_reg {
+                    write_reg_sized(reg, result, osize);
+                }
+                else {
+                    let _ = write_rm(modrm_byte, result, osize);
+                }
             }
             true
         },
