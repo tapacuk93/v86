@@ -3268,9 +3268,13 @@ pub unsafe fn cycle_internal() {
         {
             in_jit = false;
         }
-        profiler::stat_increment_by(
-            stat::RUN_FROM_CACHE_STEPS,
-            (*instruction_counter - initial_instruction_counter) as u64,
+        let steps = (*instruction_counter - initial_instruction_counter) as u64;
+        profiler::stat_increment_by(stat::RUN_FROM_CACHE_STEPS, steps);
+        profiler::record_block(
+            initial_eip as u32 >> 12,
+            initial_state_flags.cpl3(),
+            steps,
+            true,
         );
         dbg_assert!(
             *instruction_counter != initial_instruction_counter,
@@ -3333,6 +3337,7 @@ pub unsafe fn cycle_internal() {
         let initial_instruction_counter = *instruction_counter;
         jit_run_interpreted(phys_addr);
 
+        let compile_start = profiler::time_now();
         jit::jit_increase_hotness_and_maybe_compile(
             initial_eip,
             phys_addr,
@@ -3340,10 +3345,15 @@ pub unsafe fn cycle_internal() {
             initial_state_flags,
             *instruction_counter - initial_instruction_counter,
         );
+        profiler::time_add(profiler::timer::COMPILE, compile_start);
 
-        profiler::stat_increment_by(
-            stat::RUN_INTERPRETED_STEPS,
-            (*instruction_counter - initial_instruction_counter) as u64,
+        let steps = (*instruction_counter - initial_instruction_counter) as u64;
+        profiler::stat_increment_by(stat::RUN_INTERPRETED_STEPS, steps);
+        profiler::record_block(
+            initial_eip as u32 >> 12,
+            initial_state_flags.cpl3(),
+            steps,
+            false,
         );
         dbg_assert!(
             *instruction_counter != initial_instruction_counter,
@@ -3453,6 +3463,7 @@ pub unsafe fn main_loop() -> f64 {
             handle_irqs();
             if *in_hlt {
                 profiler::stat_increment(stat::MAIN_LOOP_IDLE);
+                profiler::time_add(profiler::timer::IDLE, start);
                 return t;
             }
         }
@@ -3469,6 +3480,7 @@ pub unsafe fn main_loop() -> f64 {
         let t = js::run_hardware_timers(*acpi_enabled, now);
         handle_irqs();
         if *in_hlt {
+            profiler::time_add(profiler::timer::MAIN_LOOP, start);
             return t;
         }
 
@@ -3477,6 +3489,7 @@ pub unsafe fn main_loop() -> f64 {
         }
     }
 
+    profiler::time_add(profiler::timer::MAIN_LOOP, start);
     return 0.0;
 }
 

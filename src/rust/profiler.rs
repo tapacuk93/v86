@@ -138,7 +138,12 @@ pub fn profiler_init() {
         for x in stat_array.iter_mut() {
             *x = 0
         }
+        #[allow(static_mut_refs)]
+        for x in timer_array.iter_mut() {
+            *x = 0.0
+        }
     }
+    profiler_hot_pages_clear();
 }
 
 #[no_mangle]
@@ -153,3 +158,129 @@ pub fn profiler_stat_get(stat: stat) -> f64 {
 
 #[no_mangle]
 pub fn profiler_is_enabled() -> bool { cfg!(feature = "profiler") }
+
+// Timing and hot spot tracing. Everything here is compiled out unless the profiler feature is
+// enabled, since it costs a call into javascript per measurement and a hash lookup per basic
+// block.
+
+#[allow(non_camel_case_types)]
+#[derive(Copy, Clone)]
+pub enum timer {
+    MAIN_LOOP,
+    IDLE,
+    COMPILE,
+    LAST,
+}
+
+#[allow(non_upper_case_globals)]
+pub static mut timer_array: [f64; timer::LAST as usize] = [0.0; timer::LAST as usize];
+
+/// Milliseconds since an arbitrary origin, or 0 when the profiler is disabled. Note that this
+/// calls into javascript, so it must not be used per instruction.
+pub fn time_now() -> f64 {
+    if cfg!(feature = "profiler") { unsafe { crate::cpu::cpu::js::microtick() } } else { 0.0 }
+}
+
+pub fn time_add(t: timer, start: f64) {
+    if cfg!(feature = "profiler") {
+        unsafe { timer_array[t as usize] += time_now() - start }
+    }
+}
+
+#[no_mangle]
+pub fn profiler_timer_get(t: u32) -> f64 {
+    if cfg!(feature = "profiler") && (t as usize) < timer::LAST as usize {
+        unsafe { timer_array[t as usize] }
+    }
+    else {
+        0.0
+    }
+}
+
+/// How much of the guest's time is spent in one page of its code, and whether that time is spent
+/// in compiled code or in the interpreter. Aggregating per page rather than per instruction keeps
+/// this cheap enough to leave on, and matches the granularity the jit itself works at.
+#[derive(Default, Clone)]
+pub struct HotPage {
+    pub entries: u64,
+    pub compiled_steps: u64,
+    pub interpreted_steps: u64,
+}
+
+#[allow(non_upper_case_globals)]
+pub static mut hot_pages: Option<std::collections::HashMap<u32, HotPage>> = None;
+
+/// Sorted snapshot of hot_pages, produced by profiler_hot_pages_sort and read out one field at a
+/// time by javascript
+#[allow(non_upper_case_globals)]
+pub static mut hot_pages_sorted: Vec<(u32, HotPage)> = Vec::new();
+
+/// `page` is the guest virtual page the block started in, with bit 0 holding cpl3 so that kernel
+/// and user code at the same address stay distinguishable
+pub fn record_block(page: u32, cpl3: bool, steps: u64, compiled: bool) {
+    if !cfg!(feature = "profiler") {
+        return;
+    }
+    unsafe {
+        #[allow(static_mut_refs)]
+        let map = hot_pages.get_or_insert_with(Default::default);
+        let entry = map.entry(page << 1 | cpl3 as u32).or_default();
+        entry.entries += 1;
+        if compiled {
+            entry.compiled_steps += steps;
+        }
+        else {
+            entry.interpreted_steps += steps;
+        }
+    }
+}
+
+#[no_mangle]
+pub fn profiler_hot_pages_sort() -> u32 {
+    if !cfg!(feature = "profiler") {
+        return 0;
+    }
+    unsafe {
+        #[allow(static_mut_refs)]
+        let map = hot_pages.get_or_insert_with(Default::default);
+        #[allow(static_mut_refs)]
+        {
+            hot_pages_sorted = map.iter().map(|(k, v)| (*k, v.clone())).collect();
+            hot_pages_sorted.sort_unstable_by_key(|(_, v)| {
+                std::cmp::Reverse(v.compiled_steps + v.interpreted_steps)
+            });
+            hot_pages_sorted.len() as u32
+        }
+    }
+}
+
+/// field: 0 address, 1 cpl3, 2 entries, 3 compiled steps, 4 interpreted steps
+#[no_mangle]
+pub fn profiler_hot_pages_get(index: u32, field: u32) -> f64 {
+    if !cfg!(feature = "profiler") {
+        return 0.0;
+    }
+    unsafe {
+        #[allow(static_mut_refs)]
+        match hot_pages_sorted.get(index as usize) {
+            None => 0.0,
+            Some((key, v)) => match field {
+                0 => ((key >> 1) << 12) as f64,
+                1 => (key & 1) as f64,
+                2 => v.entries as f64,
+                3 => v.compiled_steps as f64,
+                4 => v.interpreted_steps as f64,
+                _ => 0.0,
+            },
+        }
+    }
+}
+
+#[no_mangle]
+pub fn profiler_hot_pages_clear() {
+    unsafe {
+        hot_pages = None;
+        #[allow(static_mut_refs)]
+        hot_pages_sorted.clear();
+    }
+}
