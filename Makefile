@@ -357,6 +357,14 @@ devices-test: build/v86-debug.wasm
 	./tests/devices/wisp_network.js
 	./tests/devices/virtio_balloon.js
 
+# Differential test of the code generator: runs a flat binary interpreted and compiled and
+# compares registers. Needs a profiler build, since that is what reports whether anything actually
+# ran compiled.
+jit-compare-test:
+	$(MAKE) debug-with-profiler
+	$(MAKE) -C tests/jit-compare
+	./tests/jit-compare/run.js tests/jit-compare/build/packed-sse.bin
+
 rust-test: $(RUST_FILES)
 	env RUSTFLAGS="-D warnings" RUST_BACKTRACE=full RUST_TEST_THREADS=1 cargo test -- --nocapture
 	./tests/rust/verify-wasmgen-dummy-output.js

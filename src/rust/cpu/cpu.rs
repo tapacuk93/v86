@@ -3440,7 +3440,17 @@ pub unsafe fn cycle_internal() {
         let initial_instruction_counter = *instruction_counter;
         jit_run_interpreted(phys_addr);
 
+        // The jit only knows how to generate 32-bit code. is_64 is part of the cached state
+        // flags, so compiled code can never be reached from the wrong mode, but compiling it in
+        // the first place would just waste the effort and produce a module nothing can enter.
         let compile_start = profiler::time_now();
+        if config::ENABLE_LONG_MODE && *is_64 {
+            profiler::stat_increment_by(
+                stat::RUN_INTERPRETED_STEPS,
+                (*instruction_counter - initial_instruction_counter) as u64,
+            );
+            return;
+        }
         jit::jit_increase_hotness_and_maybe_compile(
             initial_eip,
             phys_addr,
@@ -3529,7 +3539,8 @@ pub fn update_state_flags() {
             (*is_32 as u32) << 0
                 | (*stack_size_32 as u32) << 1
                 | ((*cpl == 3) as u32) << 2
-                | (has_flat_segmentation() as u32) << 3,
+                | (has_flat_segmentation() as u32) << 3
+                | ((config::ENABLE_LONG_MODE && *is_64) as u32) << 4,
         )
     }
 }
