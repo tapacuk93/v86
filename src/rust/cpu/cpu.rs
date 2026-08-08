@@ -2072,6 +2072,13 @@ pub unsafe fn long_mode_active() -> bool {
     config::ENABLE_LONG_MODE && 0 != *efer & EFER_LMA
 }
 
+/// True once the guest has asked for long mode, which happens before it is actually entered: lme
+/// is set while paging is still off, and cr3 is loaded with the pml4 address before cr0.pg
+/// activates it. Anything deciding how to interpret cr3 has to use this rather than lma.
+pub unsafe fn long_mode_enabled() -> bool {
+    config::ENABLE_LONG_MODE && 0 != *efer & EFER_LME
+}
+
 /// Apply the nx bit of one 64-bit paging structure entry. Returns true if the entry is malformed
 /// and the caller should raise a page fault with the reserved bit set, which is what bit 63 means
 /// while efer.nxe is clear.
@@ -3014,7 +3021,7 @@ pub unsafe fn set_cr0(cr0: i32) {
     // In long mode cr3 is the address of the pml4 rather than of a page directory pointer table,
     // so there are no pdptes to cache
     if *cr.offset(4) & CR4_PAE != 0
-        && !long_mode_active()
+        && !long_mode_enabled()
         && old_cr0 & (CR0_CD | CR0_NW | CR0_PG) != cr0 & (CR0_CD | CR0_NW | CR0_PG)
     {
         load_pdpte(*cr.offset(3))
@@ -3028,13 +3035,18 @@ pub unsafe fn set_cr3(mut cr3: i32) {
     if false {
         dbg_log!("cr3 <- {:x}", cr3);
     }
-    if long_mode_active() {
+    if long_mode_enabled() {
         // cr3 holds the pml4 address, which is read during the page walk rather than cached
         cr3 &= !0xFFF;
     }
     else if *cr.offset(4) & CR4_PAE != 0 {
         cr3 &= !0b1111;
-        load_pdpte(cr3);
+        // The pdptes are only loaded while pae paging is active, which needs cr0.pg. Entering long
+        // mode writes cr3 with the pml4 address before setting either efer.lme or cr0.pg, so
+        // reading it as a page directory pointer table here would misparse it.
+        if 0 != *cr & CR0_PG {
+            load_pdpte(cr3);
+        }
     }
     else {
         cr3 &= !0b111111100111;

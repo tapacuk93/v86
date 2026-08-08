@@ -812,6 +812,7 @@ pub unsafe fn instr_0F22(r: i32, creg: i32) {
                     full_clear_tlb();
                 }
                 if data & CR4_PAE != 0
+                    && !long_mode_enabled()
                     && 0 != (*cr.offset(4) ^ data) & (CR4_PGE | CR4_PSE | CR4_SMEP)
                 {
                     load_pdpte(*cr.offset(3));
