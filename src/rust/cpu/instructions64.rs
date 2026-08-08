@@ -346,12 +346,63 @@ unsafe fn check_lazy_flags64(op1: i64, op2: i64, result: i64, is_sub: bool) {
     dbg_assert!(getsf() == (result < 0), "64-bit sf");
 }
 
+/// Load cs from a descriptor while in long mode.
+///
+/// A 64-bit code segment is flat and unlimited, so there is no base or limit to load, and the
+/// checks the 32-bit path makes about them do not apply. Returns false if a fault was raised.
+unsafe fn switch_seg_64_code(selector: i32) -> bool {
+    let sel = SegmentSelector::of_u16(selector as u16);
+    let (descriptor, _) = match lookup_segment_selector(sel) {
+        Ok(Ok(d)) => d,
+        Ok(Err(_)) | Err(()) => {
+            dbg_log!("#gp far return with invalid cs {:x}", selector);
+            trigger_gp(selector & !3);
+            return false;
+        },
+    };
+
+    if !descriptor.is_present() {
+        dbg_log!("#np far return to not present cs {:x}", selector);
+        trigger_np(selector & !3);
+        return false;
+    }
+    if !descriptor.is_executable() {
+        dbg_log!("#gp far return to non-executable cs {:x}", selector);
+        trigger_gp(selector & !3);
+        return false;
+    }
+
+    let is_long = descriptor.is_long();
+    *segment_is_null.offset(CS as isize) = false;
+    *segment_limits.offset(CS as isize) =
+        if is_long { 0xFFFFFFFF } else { descriptor.effective_limit() };
+    *segment_offsets.offset(CS as isize) = if is_long { 0 } else { descriptor.base() };
+    *segment_access_bytes.offset(CS as isize) = descriptor.access_byte();
+    *sreg.offset(CS as isize) = selector as u16 & !3 | *cpl as u16;
+
+    update_cs_size(descriptor.is_32() && !is_long);
+    set_cs_is_64(is_long);
+    update_state_flags();
+    true
+}
+
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
 /// opcode isn't implemented yet, in which case the caller reports it.
 pub unsafe fn run(opcode: i32) -> bool {
-    // rex.w selects a 64-bit operand size, otherwise it is 32. A 0x66 prefix would make it 16,
-    // which no instruction here implements yet.
+    // rex.w selects a 64-bit operand size, otherwise it is 32.
     let wide = 0 != *rex & REX_W;
+
+    // A 0x66 prefix makes it 16, which changes how many bytes the immediate occupies. Nothing here
+    // implements that, and decoding such an instruction at the wrong width does not merely compute
+    // the wrong value: it consumes the wrong number of bytes, and every instruction after it is
+    // garbage. Refuse instead. 0x8E is exempt, its operand being r/m16 with or without the prefix.
+    if 0 != *prefixes & crate::prefix::PREFIX_66 && opcode != 0x8E {
+        dbg_log!(
+            "Unimplemented: 16-bit operand size in 64-bit mode, opcode {:02x}",
+            opcode
+        );
+        return false;
+    }
 
     match opcode {
         // `op r/m, r` for add/or/and/sub/xor/cmp. The operation is bits 5:3 of the opcode.
@@ -726,12 +777,42 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
-        // retf. Long mode uses different descriptor checks than far_return implements, and
-        // reusing it produces a #gp whose handler then needs a 64-bit idt. Refusing keeps the
-        // failure honest rather than reporting a fault that may not be real.
+        // retf. The stack slots are the operand size, 32 bits unless rex.w. far_return is not
+        // reused: its checks are the 32-bit ones, and a 64-bit code segment has no limit to check
+        // and a base that is always zero, so applying them raises a #gp that isn't real.
         0xCB => {
-            dbg_log!("Unimplemented: 64-bit retf");
-            false
+            let rsp = read_reg64(ESP);
+            let slot = if wide { 8 } else { 4 };
+
+            let read_slot = |offset: i64| -> OrPageFault<i64> {
+                let addr = truncate_address(rsp + offset)?;
+                if wide {
+                    Ok(safe_read64s(addr)? as i64)
+                }
+                else {
+                    Ok(safe_read32s(addr)? as u32 as i64)
+                }
+            };
+
+            let target = match read_slot(0) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let selector = match read_slot(slot) {
+                Ok(v) => v as i32 & 0xFFFF,
+                Err(()) => return true,
+            };
+
+            if !switch_seg_64_code(selector) {
+                return true;
+            }
+            match truncate_address(target) {
+                Ok(a) => *instruction_pointer = a,
+                Err(()) => return true,
+            }
+            write_reg64(ESP, rsp + slot * 2);
+            after_block_boundary();
+            true
         },
 
         // ret
