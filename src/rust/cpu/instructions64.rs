@@ -1302,6 +1302,28 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // mov r/m16, Sreg
+        0x8C => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let value = *sreg.offset((modrm_byte >> 3 & 7) as isize) as i64;
+            if modrm_byte >= 0xC0 {
+                // to a register the value is zero extended to the operand size
+                write_reg_sized(modrm_rm(modrm_byte), value, osize);
+            }
+            else {
+                match resolve_modrm64(modrm_byte) {
+                    Ok(addr) => {
+                        let _ = safe_write16(addr, value as i32);
+                    },
+                    Err(()) => {},
+                }
+            }
+            true
+        },
+
         // mov Sreg, r/m16
         0x8E => {
             let modrm_byte = match read_imm8() {
@@ -1450,6 +1472,40 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             }
         },
 
+        // group 6: sldt, str, lldt, ltr, verr, verw. The loads take a system descriptor, which is
+        // sixteen bytes in long mode rather than eight, with a 64-bit base; the 32-bit paths would
+        // read half of one. The stores are the same either way.
+        0x00 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let group = modrm_byte >> 3 & 7;
+            match group {
+                // sldt, str
+                0 | 1 => {
+                    let seg = if group == 0 { LDTR } else { TR };
+                    let value = *sreg.offset(seg as isize) as i32;
+                    if modrm_byte >= 0xC0 {
+                        write_reg_sized(modrm_rm(modrm_byte), value as i64, osize);
+                    }
+                    else {
+                        match resolve_modrm64(modrm_byte) {
+                            Ok(addr) => {
+                                let _ = safe_write16(addr, value);
+                            },
+                            Err(()) => {},
+                        }
+                    }
+                    true
+                },
+                _ => {
+                    dbg_log!("Unimplemented: 64-bit 0f00 /{}", group);
+                    false
+                },
+            }
+        },
+
         // group 7: lgdt and lidt, whose pseudo descriptor is ten bytes in long mode rather than
         // six - the base is eight
         0x01 => {
@@ -1458,7 +1514,7 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 Err(()) => return true,
             };
             let group = modrm_byte >> 3 & 7;
-            if modrm_byte >= 0xC0 || (group != 2 && group != 3) {
+            if modrm_byte >= 0xC0 || !matches!(group, 0 | 1 | 2 | 3) {
                 dbg_log!("Unimplemented: 64-bit 0f01 /{}", group);
                 return false;
             }
@@ -1466,6 +1522,23 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 Ok(a) => a,
                 Err(()) => return true,
             };
+
+            // /0 and /1 store, /2 and /3 load
+            if group < 2 {
+                let (size, base) = if group == 0 {
+                    (*gdtr_size, *gdtr_offset)
+                }
+                else {
+                    (*idtr_size, *idtr_offset)
+                };
+                if safe_write16(addr, size).is_err() {
+                    return true;
+                }
+                // the base is eight bytes here, and v86 only ever holds a 32-bit one
+                let _ = safe_write64(addr + 2, base as u32 as u64);
+                return true;
+            }
+
             let size = match safe_read16(addr) {
                 Ok(v) => v,
                 Err(()) => return true,
@@ -1539,6 +1612,49 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             };
             if let Some(result) = bit_test_op(op, value, bit, osize) {
                 let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
+            }
+            true
+        },
+
+        // mov r64, crN and mov crN, r64. The operand is always 64 bits here, rex.w or not, and
+        // rex.r selects cr8 rather than extending the register.
+        0x20 | 0x22 => {
+            if 0 != *cpl {
+                trigger_gp(0);
+                return true;
+            }
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let creg = (modrm_byte >> 3 & 7) | rex_bit(REX_R);
+            let reg = modrm_rm(modrm_byte);
+
+            if !matches!(creg, 0 | 2 | 3 | 4) {
+                dbg_log!("Unimplemented: 64-bit mov with cr{}", creg);
+                return false;
+            }
+
+            if opcode == 0x20 {
+                write_reg64(reg, *cr.offset(creg as isize) as u32 as i64);
+            }
+            else {
+                let value = read_reg64(reg);
+                dbg_assert!(
+                    value as u64 >> 32 == 0,
+                    "Unsupported: control register above 32 bits"
+                );
+                match creg {
+                    0 => set_cr0(value as i32),
+                    2 => *cr.offset(2) = value as i32,
+                    3 => set_cr3(value as i32),
+                    _ => {
+                        // cr4 goes through the 0f22 path for its side effects
+                        crate::cpu::instructions_0f::instr_0F22(reg, 4);
+                        return true;
+                    },
+                }
+                after_block_boundary();
             }
             true
         },
