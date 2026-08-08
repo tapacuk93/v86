@@ -5,6 +5,7 @@ pub mod cpu;
 pub mod fpu;
 pub mod global_pointers;
 pub mod instructions;
+pub mod instructions64;
 pub mod instructions_0f;
 pub mod ioapic;
 pub mod memory;

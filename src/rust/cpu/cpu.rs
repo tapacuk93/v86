@@ -2766,7 +2766,10 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
         match return_on_pagefault!(lookup_segment_selector(selector), false) {
             Ok(desc) => desc,
             Err(SelectorNullOrInvalid::IsNull) => {
-                if reg == SS {
+                // In 64-bit mode a null ss is allowed, and is what the transition into long mode
+                // leaves behind. Segmentation is not used there, so the descriptor carries nothing
+                // worth loading.
+                if reg == SS && !long_mode_active() {
                     dbg_log!("#GP for loading 0 in SS sel={:x}", selector_raw);
                     trigger_gp(0);
                     return false;
@@ -3246,13 +3249,45 @@ pub unsafe fn run_instruction(opcode: i32) {
 #[cold]
 unsafe fn run_instruction_64(mut opcode: i32) {
     *rex = 0;
-    while opcode >= 0x40 && opcode <= 0x4F {
-        *rex = REX_PRESENT | (opcode & 0xF) as u8;
+    // Prefixes may appear in any order, but rex must be the last one before the opcode
+    loop {
+        match opcode {
+            0x40..=0x4F => *rex = REX_PRESENT | (opcode & 0xF) as u8,
+            0x66 => *prefixes |= prefix::PREFIX_66,
+            0x67 => *prefixes |= prefix::PREFIX_67,
+            0xF2 => *prefixes |= prefix::PREFIX_F2,
+            0xF3 => *prefixes |= prefix::PREFIX_F3,
+            // cs/ds/es/ss segment prefixes are ignored in 64-bit mode, fs/gs are not
+            0x2E | 0x3E | 0x26 | 0x36 => {},
+            0x64 => *prefixes = *prefixes & !prefix::PREFIX_MASK_SEGMENT | (FS as u8 + 1),
+            0x65 => *prefixes = *prefixes & !prefix::PREFIX_MASK_SEGMENT | (GS as u8 + 1),
+            _ => break,
+        }
         opcode = match read_imm8() {
             Ok(o) => o,
-            Err(()) => return,
+            Err(()) => {
+                *prefixes = 0;
+                *rex = 0;
+                return;
+            },
         };
     }
+    let handled = if opcode == 0xFF {
+        match read_imm8() {
+            Ok(modrm_byte) => crate::cpu::instructions64::run_ff(modrm_byte),
+            Err(()) => true,
+        }
+    }
+    else {
+        crate::cpu::instructions64::run(opcode)
+    };
+
+    if handled {
+        *prefixes = 0;
+        *rex = 0;
+        return;
+    }
+
     dbg_log!(
         "Unimplemented 64-bit instruction: opcode={:02x} rex={:02x} eip={:x}",
         opcode,
@@ -3260,6 +3295,7 @@ unsafe fn run_instruction_64(mut opcode: i32) {
         *previous_ip
     );
     dbg_assert!(false, "Unimplemented 64-bit instruction");
+    *prefixes = 0;
     *rex = 0;
     trigger_ud();
 }
