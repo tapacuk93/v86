@@ -7,7 +7,7 @@ import {
     FW_CFG_CUSTOM_START, FLAGS_DEFAULT,
     MMAP_BLOCK_BITS, MMAP_BLOCK_SIZE, MMAP_MAX,
     REG_ESP, REG_EBP, REG_ESI, REG_EAX, REG_EBX, REG_ECX, REG_EDX, REG_EDI,
-    REG_CS, REG_DS, REG_ES, REG_FS, REG_GS, REG_SS, CR0_PG, CR4_PAE, REG_LDTR,
+    REG_CS, REG_DS, REG_ES, REG_FS, REG_GS, REG_SS, CR0_PG, CR4_PAE, EFER_NXE, REG_LDTR,
     FLAG_VM, FLAG_INTERRUPT, FLAG_CARRY, FLAG_ADJUST, FLAG_ZERO, FLAG_SIGN, FLAG_TRAP,
     FLAG_DIRECTION, FLAG_OVERFLOW, FLAG_PARITY,
 } from "./const.js";
@@ -116,6 +116,8 @@ export function CPU(bus, wm, stop_idling)
 
     this.last_virt_eip = view(Int32Array, memory, 620, 1);
     this.eip_phys = view(Int32Array, memory, 624, 1);
+    /** @type {Int32Array} */
+    this.efer = view(Int32Array, memory, 628, 1);
 
 
     this.sysenter_cs = view(Int32Array, memory, 636, 1);
@@ -570,6 +572,7 @@ CPU.prototype.get_state = function()
     state[89] = this.devices.vmware;
     state[90] = this.devices.parallel0;
     state[91] = this.devices.parallel1;
+    state[92] = this.efer[0];
 
     return state;
 };
@@ -740,6 +743,7 @@ CPU.prototype.set_state = function(state)
     this.devices.vmware && state[89] && this.devices.vmware.set_state(state[89]);
     this.devices.parallel0 && state[90] && this.devices.parallel0.set_state(state[90]);
     this.devices.parallel1 && state[91] && this.devices.parallel1.set_state(state[91]);
+    this.efer[0] = state[92] || 0;
 
     this.fw_value = state[62];
 
@@ -2027,6 +2031,7 @@ CPU.prototype.debug_get_state = function(where)
 
     return ("mode=" + mode + "/" + op_size + " paging=" + (+((this.cr[0] & CR0_PG) !== 0)) +
         " pae=" + (+((this.cr[4] & CR4_PAE) !== 0)) +
+        " nxe=" + (+((this.efer[0] & EFER_NXE) !== 0)) +
         " iopl=" + iopl + " cpl=" + cpl + " if=" + if_ + " cs:eip=" + cs_eip +
         " cs_off=" + h(this.get_seg_cs() >>> 0, 8) +
         " flgs=" + h(this.get_eflags() >>> 0, 6) + " (" + flag_string + ")" +

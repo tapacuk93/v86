@@ -111,6 +111,8 @@ export const
 export const CR0_PG = 1 << 31;
 export const CR4_PAE = 1 << 5;
 
+export const EFER_NXE = 1 << 11;
+
 
 // https://github.com/qemu/seabios/blob/14221cd86eadba82255fdc55ed174d401c7a0a04/src/fw/paravirt.c#L205-L219
 
