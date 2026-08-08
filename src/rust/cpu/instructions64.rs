@@ -15,6 +15,7 @@
 use crate::cpu::arith;
 use crate::cpu::cpu::*;
 use crate::cpu::global_pointers::*;
+use crate::cpu::memory;
 use crate::cpu::misc_instr::{getaf, getcf, getof, getpf, getsf, getzf};
 use crate::paging::OrPageFault;
 
@@ -616,6 +617,81 @@ unsafe fn bit_test_op(op: i32, value: i64, bit: i32, osize: i32) -> Option<i64> 
         7 => Some(value ^ mask),  // btc
         _ => None,
     }
+}
+
+/// lldt in long mode. The descriptor is sixteen bytes, so the base can be anywhere; v86 keeps a
+/// 32-bit one, so a base above 4 GiB is refused rather than truncated into something wrong.
+unsafe fn load_ldt_64(selector: i32) -> bool {
+    let sel = SegmentSelector::of_u16(selector as u16);
+    if sel.is_null() {
+        *segment_limits.offset(LDTR as isize) = 0;
+        *segment_offsets.offset(LDTR as isize) = 0;
+        *sreg.offset(LDTR as isize) = selector as u16;
+        return true;
+    }
+    let (descriptor, base, _) = match lookup_system_descriptor_64(sel) {
+        Ok(Ok(v)) => v,
+        _ => {
+            dbg_log!("#gp lldt with invalid selector {:x}", selector);
+            trigger_gp(selector & !3);
+            return true;
+        },
+    };
+    // 2 is the ldt type, the only one lldt accepts
+    if !descriptor.is_system() || descriptor.system_type() != 2 {
+        dbg_log!("#gp lldt with type {:x}", descriptor.system_type());
+        trigger_gp(selector & !3);
+        return true;
+    }
+    if !descriptor.is_present() {
+        trigger_np(selector & !3);
+        return true;
+    }
+    let base = match truncate_address(base) {
+        Ok(b) => b,
+        Err(()) => return true,
+    };
+    *segment_limits.offset(LDTR as isize) = descriptor.effective_limit();
+    *segment_offsets.offset(LDTR as isize) = base;
+    *sreg.offset(LDTR as isize) = selector as u16;
+    true
+}
+
+/// ltr in long mode. Type 9 is the only tss form here, the 16-bit ones not existing.
+unsafe fn load_tr_64(selector: i32) -> bool {
+    let sel = SegmentSelector::of_u16(selector as u16);
+    let (descriptor, base, address) = match lookup_system_descriptor_64(sel) {
+        Ok(Ok(v)) => v,
+        _ => {
+            dbg_log!("#gp ltr with invalid selector {:x}", selector);
+            trigger_gp(selector & !3);
+            return true;
+        },
+    };
+    if !descriptor.is_system() || descriptor.system_type() != 9 {
+        dbg_log!("#gp ltr with type {:x}", descriptor.system_type());
+        trigger_gp(selector & !3);
+        return true;
+    }
+    if !descriptor.is_present() {
+        trigger_np(selector & !3);
+        return true;
+    }
+    let base = match truncate_address(base) {
+        Ok(b) => b,
+        Err(()) => return true,
+    };
+    *tss_size_32 = true;
+    *segment_limits.offset(TR as isize) = descriptor.effective_limit();
+    *segment_offsets.offset(TR as isize) = base;
+    *sreg.offset(TR as isize) = selector as u16;
+
+    // mark the task busy, as the 32-bit path does
+    match translate_address_system_write(address + 5) {
+        Ok(a) => memory::write8(a, descriptor.set_busy().access_byte() as i32),
+        Err(()) => {},
+    }
+    true
 }
 
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
@@ -1499,6 +1575,19 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     }
                     true
                 },
+                // lldt and ltr, whose descriptor is the sixteen byte form
+                2 | 3 => {
+                    let value = match read_rm(modrm_byte, 16) {
+                        Ok(v) => v as i32 & 0xFFFF,
+                        Err(()) => return true,
+                    };
+                    if group == 2 {
+                        load_ldt_64(value)
+                    }
+                    else {
+                        load_tr_64(value)
+                    }
+                },
                 _ => {
                     dbg_log!("Unimplemented: 64-bit 0f00 /{}", group);
                     false
@@ -1656,6 +1745,52 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 }
                 after_block_boundary();
             }
+            true
+        },
+
+        // imul r, r/m. Carry and overflow say the result did not fit in the destination; the
+        // rest are undefined and left alone.
+        0xAF => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            let src = match read_rm(modrm_byte, osize) {
+                Ok(v) => sized(v, osize),
+                Err(()) => return true,
+            };
+            let dst = sized(read_reg64(reg), osize);
+            let wide = (dst as i128) * (src as i128);
+            let result = sized(wide as i64, osize);
+            let overflowed = wide != result as i128;
+
+            *flags_changed &= !(FLAG_CARRY | FLAG_OVERFLOW);
+            *flags = *flags & !(FLAG_CARRY | FLAG_OVERFLOW)
+                | if overflowed { FLAG_CARRY | FLAG_OVERFLOW } else { 0 };
+            write_reg_sized(reg, result, osize);
+            true
+        },
+
+        // multi byte nop, which still has a modrm to consume
+        0x1F => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            if modrm_byte < 0xC0 {
+                let _ = resolve_modrm64(modrm_byte);
+            }
+            true
+        },
+
+        // bswap
+        0xC8..=0xCF => {
+            let reg = (opcode & 7) | rex_bit(REX_B);
+            let value = read_reg64(reg);
+            let swapped =
+                if osize == 64 { value.swap_bytes() } else { (value as u32).swap_bytes() as i64 };
+            write_reg_sized(reg, swapped, osize);
             true
         },
 

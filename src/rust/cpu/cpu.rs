@@ -3050,6 +3050,39 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
     true
 }
 
+/// Read a system descriptor in long mode, where it is sixteen bytes rather than eight.
+///
+/// The extra half carries the top 32 bits of the base, so the descriptor covers the whole address
+/// space; the rest of it is reserved. Only the ldt and tss descriptors take this form - the code
+/// and data descriptors stay eight bytes, which is why lookup_segment_selector is left alone.
+///
+/// Returns the descriptor with its low half in the ordinary layout, the full base, and the address
+/// it was read from.
+pub unsafe fn lookup_system_descriptor_64(
+    selector: SegmentSelector,
+) -> OrPageFault<Result<(SegmentDescriptor, i64, i32), SelectorNullOrInvalid>> {
+    dbg_assert!(long_mode_active());
+
+    if selector.is_null() {
+        return Ok(Err(SelectorNullOrInvalid::IsNull));
+    }
+    // a system descriptor is always in the gdt
+    let (table_offset, table_limit) = (*gdtr_offset, *gdtr_size);
+    let offset = table_offset + selector.descriptor_offset() as i32;
+
+    if selector.descriptor_offset() as i32 + 15 > table_limit {
+        return Ok(Err(SelectorNullOrInvalid::OutsideOfTableLimit));
+    }
+
+    let low = memory::read64s(translate_address_system_read(offset)?) as u64;
+    let high = memory::read64s(translate_address_system_read(offset + 8)?) as u64;
+
+    let descriptor = SegmentDescriptor::of_u64(low);
+    let base = descriptor.base() as u32 as i64 | ((high & 0xFFFFFFFF) as i64) << 32;
+
+    Ok(Ok((descriptor, base, offset)))
+}
+
 pub unsafe fn load_tr(selector: i32) {
     let selector = SegmentSelector::of_u16(selector as u16);
     dbg_assert!(selector.is_gdt(), "TODO: TR can only be loaded from GDT");
