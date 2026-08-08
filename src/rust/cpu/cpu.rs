@@ -493,6 +493,180 @@ impl InterruptDescriptor {
     const TRAP_GATE: u8 = 0b111;
 }
 
+/// A long mode gate descriptor, which is sixteen bytes rather than eight: the offset gains a third
+/// piece in the upper half, and the low dword of that half also carries the interrupt stack table
+/// index. Task gates do not exist here.
+pub struct InterruptDescriptor64 {
+    low: u64,
+    high: u64,
+}
+
+impl InterruptDescriptor64 {
+    pub fn of_u64s(low: u64, high: u64) -> InterruptDescriptor64 {
+        InterruptDescriptor64 { low, high }
+    }
+    pub fn offset(&self) -> i64 {
+        (self.low & 0xffff | self.low >> 32 & 0xffff0000 | (self.high & 0xffffffff) << 32) as i64
+    }
+    pub fn selector(&self) -> u16 { (self.low >> 16 & 0xffff) as u16 }
+    pub fn ist(&self) -> u8 { (self.low >> 32 & 7) as u8 }
+    pub fn access_byte(&self) -> u8 { (self.low >> 40 & 0xff) as u8 }
+    pub fn dpl(&self) -> u8 { (self.access_byte() >> 5 & 3) as u8 }
+    pub fn gate_type(&self) -> u8 { self.access_byte() & 0xF }
+    pub fn is_present(&self) -> bool { self.access_byte() & 0x80 == 0x80 }
+
+    const INTERRUPT_GATE: u8 = 0xE;
+    const TRAP_GATE: u8 = 0xF;
+}
+
+/// Deliver an interrupt in long mode.
+///
+/// The gate is sixteen bytes, every stack slot pushed is eight, and the frame always carries ss
+/// and rsp whether or not the privilege level changed - unlike the 32-bit form, which only pushes
+/// them on a change. Segments are flat here, so there is no base or limit to load.
+///
+/// Only same privilege delivery is implemented, which is what a kernel faulting at cpl 0 needs.
+/// A privilege change or a non-zero ist index needs the tss, and is refused rather than guessed.
+#[cold]
+pub unsafe fn call_interrupt_vector_64(
+    interrupt_nr: i32,
+    is_software_int: bool,
+    error_code: Option<i32>,
+) {
+    if interrupt_nr << 4 | 15 > *idtr_size {
+        dbg_log!(
+            "#gp interrupt {:x} beyond idt limit {:x}",
+            interrupt_nr,
+            *idtr_size
+        );
+        dbg_assert!(false, "Unimplemented: #gp for interrupt beyond idt limit");
+        return;
+    }
+
+    let address = return_on_pagefault!(translate_address_system_read(
+        *idtr_offset + (interrupt_nr << 4)
+    ));
+    let low = memory::read64s(address) as u64;
+    let high = memory::read64s(address + 8) as u64;
+    let descriptor = InterruptDescriptor64::of_u64s(low, high);
+
+    let gate_type = descriptor.gate_type();
+    if gate_type != InterruptDescriptor64::INTERRUPT_GATE
+        && gate_type != InterruptDescriptor64::TRAP_GATE
+    {
+        dbg_log!(
+            "#gp invalid gate type {:x} in long mode idt, vector {:x}",
+            gate_type,
+            interrupt_nr
+        );
+        dbg_assert!(false, "Unimplemented: invalid long mode gate");
+        return;
+    }
+    if !descriptor.is_present() {
+        dbg_log!("#np interrupt {:x} gate not present", interrupt_nr);
+        dbg_assert!(false, "Unimplemented: #np for long mode gate");
+        return;
+    }
+    if is_software_int && descriptor.dpl() < *cpl {
+        dbg_log!("#gp software interrupt {:x} with dpl < cpl", interrupt_nr);
+        trigger_gp(interrupt_nr << 3 | 2);
+        return;
+    }
+
+    if descriptor.ist() != 0 {
+        dbg_log!("Unimplemented: interrupt stack table");
+        dbg_assert!(false, "Unimplemented: ist");
+        return;
+    }
+
+    let selector = descriptor.selector() as i32;
+    if selector & 3 != *cpl as i32 {
+        dbg_log!(
+            "Unimplemented: long mode interrupt with a privilege change, cs {:x} cpl {}",
+            selector,
+            *cpl
+        );
+        dbg_assert!(false, "Unimplemented: long mode privilege change");
+        return;
+    }
+
+    // the frame is always these five, eight bytes each, and rsp is aligned to sixteen first
+    let old_rsp = read_reg64(ESP);
+    let mut rsp = old_rsp & !0xF;
+
+    let push = |rsp: &mut i64, value: i64| -> OrPageFault<()> {
+        *rsp -= 8;
+        let addr = *rsp;
+        if addr as u64 >> 32 != 0 {
+            dbg_log!("Unsupported: interrupt stack above 4 GiB");
+            return Err(());
+        }
+        safe_write64(addr as i32, value as u64)
+    };
+
+    let eflags = get_eflags();
+    let result = (|| -> OrPageFault<()> {
+        push(&mut rsp, *sreg.offset(SS as isize) as i64)?;
+        push(&mut rsp, old_rsp)?;
+        push(&mut rsp, eflags as i64)?;
+        push(&mut rsp, *sreg.offset(CS as isize) as i64)?;
+        push(&mut rsp, *instruction_pointer as i64)?;
+        if let Some(code) = error_code {
+            push(&mut rsp, code as i64)?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        return;
+    }
+
+    write_reg64(ESP, rsp);
+
+    if !switch_seg_64_interrupt(selector) {
+        return;
+    }
+
+    // an interrupt gate clears if, a trap gate leaves it
+    if gate_type == InterruptDescriptor64::INTERRUPT_GATE {
+        *flags &= !FLAG_INTERRUPT;
+    }
+    *flags &= !(FLAG_TRAP | FLAG_RF | FLAG_NT);
+
+    let offset = descriptor.offset();
+    if offset as u64 >> 32 != 0 {
+        dbg_log!("Unsupported: interrupt handler above 4 GiB at {:x}", offset);
+        dbg_assert!(false, "Unsupported: handler above 4 GiB");
+        return;
+    }
+    *instruction_pointer = offset as i32;
+    *previous_ip = *instruction_pointer;
+}
+
+/// Load cs for a long mode interrupt. The segment is flat, so only the selector and the access
+/// byte carry anything worth keeping.
+unsafe fn switch_seg_64_interrupt(selector: i32) -> bool {
+    let sel = SegmentSelector::of_u16(selector as u16);
+    let (descriptor, _) = match lookup_segment_selector(sel) {
+        Ok(Ok(d)) => d,
+        Ok(Err(_)) | Err(()) => {
+            dbg_log!("#gp interrupt with invalid cs {:x}", selector);
+            dbg_assert!(false, "Unimplemented: #gp for invalid interrupt cs");
+            return false;
+        },
+    };
+
+    *segment_is_null.offset(CS as isize) = false;
+    *segment_limits.offset(CS as isize) = 0xFFFFFFFF;
+    *segment_offsets.offset(CS as isize) = 0;
+    *segment_access_bytes.offset(CS as isize) = descriptor.access_byte();
+    *sreg.offset(CS as isize) = selector as u16 & !3 | *cpl as u16;
+
+    update_cs_size(descriptor.is_32() && !descriptor.is_long());
+    set_cs_is_64(descriptor.is_long());
+    update_state_flags();
+    true
+}
+
 pub unsafe fn switch_cs_real_mode(selector: i32) {
     dbg_assert!(!*protected_mode || vm86_mode());
 
@@ -824,6 +998,10 @@ pub unsafe fn call_interrupt_vector(
     is_software_int: bool,
     error_code: Option<i32>,
 ) {
+    if long_mode_active() {
+        return call_interrupt_vector_64(interrupt_nr, is_software_int, error_code);
+    }
+
     if *protected_mode {
         if vm86_mode() && *cr.offset(4) & CR4_VME != 0 {
             panic!("Unimplemented: VME");

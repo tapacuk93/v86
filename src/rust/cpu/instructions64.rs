@@ -1050,21 +1050,29 @@ pub unsafe fn run(opcode: i32) -> bool {
             if modrm_byte >> 3 & 7 != 0 {
                 return false;
             }
+            // The displacement belongs to the modrm encoding and comes before the immediate, so
+            // the address has to be resolved first. Resolving it afterwards reads the immediate's
+            // bytes as the displacement, and resolving it twice consumes them twice.
+            let addr = if modrm_byte >= 0xC0 {
+                None
+            }
+            else {
+                match resolve_modrm64(modrm_byte) {
+                    Ok(a) => Some(a),
+                    Err(()) => return true,
+                }
+            };
+
             if opcode == 0xC6 {
                 let imm = match read_imm8() {
                     Ok(v) => v,
                     Err(()) => return true,
                 };
-                if modrm_byte >= 0xC0 {
-                    write_reg8(modrm_rm(modrm_byte), imm);
-                }
-                else {
-                    match resolve_modrm64(modrm_byte) {
-                        Ok(addr) => {
-                            let _ = safe_write8(addr, imm);
-                        },
-                        Err(()) => {},
-                    }
+                match addr {
+                    None => write_reg8(modrm_rm(modrm_byte), imm),
+                    Some(a) => {
+                        let _ = safe_write8(a, imm);
+                    },
                 }
             }
             else {
@@ -1072,7 +1080,17 @@ pub unsafe fn run(opcode: i32) -> bool {
                     Ok(v) => v,
                     Err(()) => return true,
                 };
-                let _ = write_rm(modrm_byte, sized(imm, osize), osize);
+                let value = sized(imm, osize);
+                match addr {
+                    None => write_reg_sized(modrm_rm(modrm_byte), value, osize),
+                    Some(a) => {
+                        let _ = match osize {
+                            16 => safe_write16(a, value as i32 & 0xFFFF),
+                            32 => safe_write32(a, value as i32),
+                            _ => safe_write64(a, value as u64),
+                        };
+                    },
+                }
             }
             true
         },
@@ -1137,6 +1155,32 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Err(()) => return true,
             }
             write_reg64(ESP, rsp + slot * 2);
+            after_block_boundary();
+            true
+        },
+
+        // iret. Pops rip, cs, rflags, rsp and ss, eight bytes each
+        0xCF => {
+            let rsp = read_reg64(ESP);
+            let slot = |i: i64| -> OrPageFault<i64> {
+                Ok(safe_read64s(truncate_address(rsp + i * 8)?)? as i64)
+            };
+            let (rip, cs, rflags, new_rsp, ss) =
+                match (|| Ok((slot(0)?, slot(1)?, slot(2)?, slot(3)?, slot(4)?)))() {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                };
+
+            if !switch_seg_64_code(cs as i32 & 0xFFFF) {
+                return true;
+            }
+            match truncate_address(rip) {
+                Ok(a) => *instruction_pointer = a,
+                Err(()) => return true,
+            }
+            update_eflags(rflags as i32);
+            write_reg64(ESP, new_rsp);
+            *sreg.offset(SS as isize) = ss as u16;
             after_block_boundary();
             true
         },
@@ -1332,6 +1376,45 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     false
                 },
             }
+        },
+
+        // group 7: lgdt and lidt, whose pseudo descriptor is ten bytes in long mode rather than
+        // six - the base is eight
+        0x01 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let group = modrm_byte >> 3 & 7;
+            if modrm_byte >= 0xC0 || (group != 2 && group != 3) {
+                dbg_log!("Unimplemented: 64-bit 0f01 /{}", group);
+                return false;
+            }
+            let addr = match resolve_modrm64(modrm_byte) {
+                Ok(a) => a,
+                Err(()) => return true,
+            };
+            let size = match safe_read16(addr) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let base = match safe_read64s(addr + 2) {
+                Ok(v) => v as i64,
+                Err(()) => return true,
+            };
+            let base = match truncate_address(base) {
+                Ok(b) => b,
+                Err(()) => return true,
+            };
+            if group == 2 {
+                *gdtr_size = size;
+                *gdtr_offset = base;
+            }
+            else {
+                *idtr_size = size;
+                *idtr_offset = base;
+            }
+            true
         },
 
         // cpuid
