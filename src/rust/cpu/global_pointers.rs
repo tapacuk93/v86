@@ -19,6 +19,12 @@ pub const state_flags: *mut CachedStateFlags = 108 as *mut CachedStateFlags;
 pub const last_result: *mut i32 = 112 as *mut i32;
 pub const flags: *mut i32 = 120 as *mut i32;
 
+// The lazy flag operands for 64-bit operations. The 32-bit slots above stay exactly as they are:
+// widening them would put an i64 conversion in front of every arithmetic instruction the jit
+// emits, which is a cost on the common path for something long mode alone needs.
+pub const last_op1_64: *mut i64 = 256 as *mut i64;
+pub const last_result_64: *mut i64 = 264 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;

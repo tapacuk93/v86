@@ -5,8 +5,19 @@ use crate::cpu::fpu::{
 use crate::cpu::global_pointers::*;
 use crate::paging::OrPageFault;
 
+/// True when the flags waiting to be computed came from a 64-bit operation, whose operands are
+/// kept in their own slots. Compiles away entirely while long mode is disabled.
+#[inline(always)]
+unsafe fn lazy_flags_are_64() -> bool {
+    crate::config::ENABLE_LONG_MODE && *last_op_size == OPSIZE_64
+}
+
 pub unsafe fn getcf() -> bool {
     if 0 != *flags_changed & 1 {
+        if lazy_flags_are_64() {
+            let sub_mask = (*flags_changed >> 31) as i64;
+            return ((*last_result_64 ^ sub_mask) as u64) < ((*last_op1_64 ^ sub_mask) as u64);
+        }
         let m = (2 << *last_op_size) - 1;
         dbg_assert!((*last_op1 as u32) <= m);
         dbg_assert!((*last_result as u32) <= m);
@@ -24,8 +35,10 @@ pub unsafe fn getcf() -> bool {
 #[no_mangle]
 pub unsafe fn getpf() -> bool {
     if 0 != *flags_changed & FLAG_PARITY {
+        // parity is computed over the low byte, so the 64-bit case only needs its low half
+        let result = if lazy_flags_are_64() { *last_result_64 as i32 } else { *last_result };
         // inverted lookup table
-        return 0 != 0x9669 << 2 >> ((*last_result ^ *last_result >> 4) & 15) & FLAG_PARITY;
+        return 0 != 0x9669 << 2 >> ((result ^ result >> 4) & 15) & FLAG_PARITY;
     }
     else {
         return 0 != *flags & FLAG_PARITY;
@@ -34,6 +47,11 @@ pub unsafe fn getpf() -> bool {
 pub unsafe fn getaf() -> bool {
     if 0 != *flags_changed & FLAG_ADJUST {
         let is_sub = *flags_changed & FLAG_SUB != 0;
+        if lazy_flags_are_64() {
+            let last_op2 =
+                (*last_result_64).wrapping_sub(*last_op1_64) * if is_sub { -1 } else { 1 };
+            return 0 != (*last_op1_64 ^ last_op2 ^ *last_result_64) & FLAG_ADJUST as i64;
+        }
         let last_op2 = (*last_result - *last_op1) * if is_sub { -1 } else { 1 };
         return 0 != (*last_op1 ^ last_op2 ^ *last_result) & FLAG_ADJUST;
     }
@@ -43,6 +61,9 @@ pub unsafe fn getaf() -> bool {
 }
 pub unsafe fn getzf() -> bool {
     if 0 != *flags_changed & FLAG_ZERO {
+        if lazy_flags_are_64() {
+            return *last_result_64 == 0;
+        }
         return 0 != (!*last_result & *last_result - 1) >> *last_op_size & 1;
     }
     else {
@@ -51,6 +72,9 @@ pub unsafe fn getzf() -> bool {
 }
 pub unsafe fn getsf() -> bool {
     if 0 != *flags_changed & FLAG_SIGN {
+        if lazy_flags_are_64() {
+            return *last_result_64 < 0;
+        }
         return 0 != *last_result >> *last_op_size & 1;
     }
     else {
@@ -63,6 +87,15 @@ pub unsafe fn getof() -> bool {
 
         // add: (a ^ result) & (b ^ result)
         // sub: (a ^ result) & (b ^ result ^ 1) (or (a ^ b) & (result ^ a))
+        if lazy_flags_are_64() {
+            let b_xor_1_if_sub = (*last_result_64)
+                .wrapping_sub(*last_op1_64)
+                .wrapping_sub(is_sub as i64);
+            return 0
+                != ((*last_op1_64 ^ *last_result_64) & (b_xor_1_if_sub ^ *last_result_64))
+                    >> OPSIZE_64
+                    & 1;
+        }
         let b_xor_1_if_sub = (*last_result - *last_op1) - is_sub as i32;
         return 0
             != ((*last_op1 ^ *last_result) & (b_xor_1_if_sub ^ *last_result)) >> *last_op_size & 1;

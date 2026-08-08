@@ -55,6 +55,20 @@ long_mode:
     add rsi, 1                              ; overflow, so the flags matter
     mov rdi, 0
     sub rdi, 1                              ; borrow
+
+    ; capture the flags of a few 64-bit operations, so a wrong lazy computation shows up in a
+    ; register rather than only in a branch that happens to go the right way
+    mov r8, 0x8000000000000000
+    sub r8, 1                               ; signed overflow
+    seto r9b
+    setc r10b
+    sets r11b
+    setz r12b
+
+    mov r13, 0xFFFFFFFFFFFFFFFF
+    add r13, 1                              ; carry out, result zero
+    setc r14b
+    setz r15b
     hlt
 
 align 8

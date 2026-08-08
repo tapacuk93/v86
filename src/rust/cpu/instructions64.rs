@@ -12,8 +12,10 @@
 
 #![allow(non_snake_case)]
 
+use crate::cpu::arith;
 use crate::cpu::cpu::*;
 use crate::cpu::global_pointers::*;
+use crate::cpu::misc_instr::{getaf, getcf, getof, getpf, getsf, getzf};
 use crate::paging::OrPageFault;
 
 /// A linear address computed in 64-bit mode. v86 can only address the low 4 GiB.
@@ -202,9 +204,37 @@ unsafe fn set_flags64_logical(result: i64) {
 /// One of the eight operations of the 0x80/0x81/0x83 group, and of the eight `op r/m, r` /
 /// `op r, r/m` pairs. Returns the result to write back, or None for cmp and test which discard it.
 unsafe fn group1_op(op: i32, dst: i64, src: i64, wide: bool) -> Option<i64> {
-    // The operands arrive sign extended, so a narrower result has to be brought back to its own
-    // width before the flags are read off it: otherwise the sign bit is looked for at bit 63 and
-    // a result of 0x1_0000_0000 would not count as zero.
+    // At the full width the flags stay lazy, the same as every other operand size, so that
+    // generated code can defer them too. Narrower operations still go through the 32-bit path,
+    // where the operands must be brought back to their own width first: otherwise the sign bit is
+    // looked for at bit 63, and a result of 0x1_0000_0000 would not count as zero.
+    if wide {
+        return match op {
+            0 => {
+                let r = arith::add64(dst, src);
+                check_lazy_flags64(dst, src, r, false);
+                Some(r)
+            },
+            1 => Some(arith::logical64(dst | src)),
+            4 => Some(arith::logical64(dst & src)),
+            5 => {
+                let r = arith::sub64(dst, src);
+                check_lazy_flags64(dst, src, r, true);
+                Some(r)
+            },
+            6 => Some(arith::logical64(dst ^ src)),
+            7 => {
+                let r = arith::sub64(dst, src);
+                check_lazy_flags64(dst, src, r, true);
+                None
+            },
+            _ => {
+                dbg_log!("Unimplemented: 64-bit adc/sbb");
+                dbg_assert!(false, "Unimplemented: 64-bit adc/sbb");
+                None
+            },
+        };
+    }
     match op {
         0 => {
             let r = sized(dst.wrapping_add(src), wide);
@@ -292,6 +322,30 @@ unsafe fn write_rm8(modrm_byte: i32, value: i32) -> OrPageFault<()> {
     }
 }
 
+/// Cross check the lazy flags against a direct computation.
+///
+/// The lazy path stores the operands and works each flag out when it is read, which is the form
+/// generated code needs. This is the obvious version, and in debug builds every 64-bit add and
+/// sub is checked against it. Only the interpreter runs 64-bit code today, so there is no
+/// interpreter-versus-jit comparison to catch a mistake here yet.
+#[inline(always)]
+unsafe fn check_lazy_flags64(op1: i64, op2: i64, result: i64, is_sub: bool) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    let cf = if is_sub { (op1 as u64) < (op2 as u64) } else { (result as u64) < (op1 as u64) };
+    let af = 0 != (op1 ^ op2 ^ result) & 0x10;
+    let of =
+        if is_sub { (op1 ^ op2) & (op1 ^ result) < 0 } else { (op1 ^ result) & (op2 ^ result) < 0 };
+    let pf = (result as u8).count_ones() % 2 == 0;
+    dbg_assert!(getcf() == cf, "64-bit cf");
+    dbg_assert!(getaf() == af, "64-bit af");
+    dbg_assert!(getof() == of, "64-bit of");
+    dbg_assert!(getpf() == pf, "64-bit pf");
+    dbg_assert!(getzf() == (result == 0), "64-bit zf");
+    dbg_assert!(getsf() == (result < 0), "64-bit sf");
+}
+
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
 /// opcode isn't implemented yet, in which case the caller reports it.
 pub unsafe fn run(opcode: i32) -> bool {
@@ -374,7 +428,12 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(v) => sized(v, wide),
                 Err(()) => return true,
             };
-            set_flags64_logical(sized(dst & src, wide));
+            if wide {
+                arith::logical64(dst & src);
+            }
+            else {
+                set_flags64_logical(sized(dst & src, wide));
+            }
             true
         },
 

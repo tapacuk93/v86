@@ -121,6 +121,9 @@ pub const FLAGS_ALL: i32 =
 pub const OPSIZE_8: i32 = 7;
 pub const OPSIZE_16: i32 = 15;
 pub const OPSIZE_32: i32 = 31;
+/// The index of the sign bit, as with the others. Operands for this size live in last_op1_64 and
+/// last_result_64 rather than the 32-bit slots.
+pub const OPSIZE_64: i32 = 63;
 
 pub const EAX: i32 = 0;
 pub const ECX: i32 = 1;
@@ -4334,34 +4337,34 @@ unsafe fn get_reg8_index(index: i32) -> i32 {
 }
 
 pub unsafe fn read_reg8(index: i32) -> i32 {
-    dbg_assert!(index >= 0 && index < 8);
+    dbg_assert!(index >= 0 && index < 16);
     return *reg8.offset(get_reg8_index(index) as isize) as i32;
 }
 
 pub unsafe fn write_reg8(index: i32, value: i32) {
-    dbg_assert!(index >= 0 && index < 8);
+    dbg_assert!(index >= 0 && index < 16);
     *reg8.offset(get_reg8_index(index) as isize) = value as u8;
 }
 
 fn get_reg16_index(index: i32) -> i32 { return index << 2; }
 
 pub unsafe fn read_reg16(index: i32) -> i32 {
-    dbg_assert!(index >= 0 && index < 8);
+    dbg_assert!(index >= 0 && index < 16);
     return *reg16.offset(get_reg16_index(index) as isize) as i32;
 }
 
 pub unsafe fn write_reg16(index: i32, value: i32) {
-    dbg_assert!(index >= 0 && index < 8);
+    dbg_assert!(index >= 0 && index < 16);
     *reg16.offset(get_reg16_index(index) as isize) = value as u16;
 }
 
 pub unsafe fn read_reg32(index: i32) -> i32 {
-    dbg_assert!(index >= 0 && index < 8);
+    dbg_assert!(index >= 0 && index < 16);
     *reg32.offset(get_reg32_index(index) as isize)
 }
 
 pub unsafe fn write_reg32(index: i32, value: i32) {
-    dbg_assert!(index >= 0 && index < 8);
+    dbg_assert!(index >= 0 && index < 16);
     *reg32.offset(get_reg32_index(index) as isize) = value;
 }
 

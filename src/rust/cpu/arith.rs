@@ -40,6 +40,37 @@ unsafe fn sub(dest_operand: i32, source_operand: i32, op_size: i32) -> i32 {
     *flags_changed = FLAGS_ALL | FLAG_SUB;
     return res;
 }
+/// 64-bit add and sub, which record their operands in the 64-bit slots so the flags stay lazy the
+/// way they are for every other width. Computing them eagerly would work in the interpreter but
+/// not in generated code, where the deferral is the point.
+pub unsafe fn add64(dest_operand: i64, source_operand: i64) -> i64 {
+    let res = dest_operand.wrapping_add(source_operand);
+    *last_op1_64 = dest_operand;
+    *last_result_64 = res;
+    *last_op_size = OPSIZE_64;
+    *flags_changed = FLAGS_ALL;
+    res
+}
+
+pub unsafe fn sub64(dest_operand: i64, source_operand: i64) -> i64 {
+    let res = dest_operand.wrapping_sub(source_operand);
+    *last_op1_64 = dest_operand;
+    *last_result_64 = res;
+    *last_op_size = OPSIZE_64;
+    *flags_changed = FLAGS_ALL | FLAG_SUB;
+    res
+}
+
+/// The logical operations clear carry and overflow outright and leave the rest to be worked out
+/// from the result
+pub unsafe fn logical64(res: i64) -> i64 {
+    *last_result_64 = res;
+    *last_op_size = OPSIZE_64;
+    *flags_changed = FLAGS_ALL & !FLAG_CARRY & !FLAG_ADJUST & !FLAG_OVERFLOW;
+    *flags = *flags & !FLAG_CARRY & !FLAG_ADJUST & !FLAG_OVERFLOW;
+    res
+}
+
 unsafe fn sbb(dest_operand: i32, source_operand: i32, op_size: i32) -> i32 {
     let cf = getcf() as i32;
     let res = (dest_operand - source_operand - cf) & opsize_to_mask(op_size);
