@@ -118,6 +118,8 @@ export function CPU(bus, wm, stop_idling)
     this.eip_phys = view(Int32Array, memory, 624, 1);
     /** @type {Int32Array} */
     this.efer = view(Int32Array, memory, 628, 1);
+    /** @type {Uint8Array} */
+    this.is_64 = view(Uint8Array, memory, 632, 1);
 
 
     this.sysenter_cs = view(Int32Array, memory, 636, 1);
@@ -573,6 +575,7 @@ CPU.prototype.get_state = function()
     state[90] = this.devices.parallel0;
     state[91] = this.devices.parallel1;
     state[92] = this.efer[0];
+    state[93] = this.is_64[0];
 
     return state;
 };
@@ -744,6 +747,7 @@ CPU.prototype.set_state = function(state)
     this.devices.parallel0 && state[90] && this.devices.parallel0.set_state(state[90]);
     this.devices.parallel1 && state[91] && this.devices.parallel1.set_state(state[91]);
     this.efer[0] = state[92] || 0;
+    this.is_64[0] = state[93] || 0;
 
     this.fw_value = state[62];
 

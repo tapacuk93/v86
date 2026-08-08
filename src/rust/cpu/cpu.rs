@@ -436,6 +436,9 @@ impl SegmentDescriptor {
     pub fn is_conforming_executable(&self) -> bool { self.is_dc() && self.is_executable() }
     pub fn dpl(&self) -> u8 { (self.access_byte() >> 5) & 3 }
     pub fn is_32(&self) -> bool { self.flags() & 4 == 4 }
+    /// The l bit, which marks a 64-bit code segment. Only meaningful in long mode, where it is
+    /// mutually exclusive with the d bit
+    pub fn is_long(&self) -> bool { self.flags() & 2 == 2 }
     pub fn effective_limit(&self) -> u32 {
         if self.flags() & 8 == 8 {
             self.limit() << 12 | 0xFFF
@@ -1498,15 +1501,23 @@ pub unsafe fn far_jump(eip: i32, selector: i32, is_call: bool, is_osize_32: bool
             }
         }
 
-        dbg_assert!((eip as u32) <= info.effective_limit(), "todo: #gp");
+        // A 64-bit code segment has a flat, unlimited address space: its base is treated as 0 and
+        // its limit is not checked
+        let is_long = long_mode_active() && info.is_long();
 
-        update_cs_size(info.is_32());
+        if !is_long {
+            dbg_assert!((eip as u32) <= info.effective_limit(), "todo: #gp");
+        }
+
+        update_cs_size(info.is_32() && !is_long);
+        set_cs_is_64(is_long);
 
         *segment_is_null.offset(CS as isize) = false;
-        *segment_limits.offset(CS as isize) = info.effective_limit();
+        *segment_limits.offset(CS as isize) =
+            if is_long { 0xFFFFFFFF } else { info.effective_limit() };
         *segment_access_bytes.offset(CS as isize) = info.access_byte();
 
-        *segment_offsets.offset(CS as isize) = info.base();
+        *segment_offsets.offset(CS as isize) = if is_long { 0 } else { info.base() };
         *sreg.offset(CS as isize) = selector as u16 & !3 | *cpl as u16;
 
         *instruction_pointer = get_seg_cs() + eip;
@@ -3082,6 +3093,23 @@ pub unsafe fn update_cs_size(new_size: bool) {
     if *is_32 != new_size {
         *is_32 = new_size;
     }
+}
+
+/// Entering 64-bit mode changes how instructions decode: the 0x40-0x4F opcodes become rex
+/// prefixes, the default address size becomes 64 bits, and the register file gains r8-r15. None of
+/// that is implemented, so this only records the state and complains loudly rather than letting
+/// the 32-bit decoder run over 64-bit code and produce nonsense.
+pub unsafe fn set_cs_is_64(value: bool) {
+    if *is_64 != value {
+        *is_64 = value;
+        if value {
+            dbg_log!("Entered 64-bit mode: decoding 64-bit code is not implemented");
+        }
+        else {
+            dbg_log!("Left 64-bit mode");
+        }
+    }
+    dbg_assert!(!value, "TODO: 64-bit code");
 }
 
 #[inline(never)]
@@ -4783,6 +4811,7 @@ pub unsafe fn reset_cpu() {
     }
 
     *efer = 0;
+    *is_64 = false;
 
     *fpu_stack_empty = 0xFF;
     *fpu_stack_ptr = 0;
