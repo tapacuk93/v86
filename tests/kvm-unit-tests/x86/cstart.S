@@ -131,7 +131,7 @@ ap_start32:
 	mov %ax, %gs
 	mov %ax, %ss
 	mov $-4096, %esp
-	lock/xaddl %esp, smp_stacktop
+	lock xaddl %esp, smp_stacktop
 	setup_percpu_area
 	call prepare_32
 	call load_tss
@@ -183,7 +183,7 @@ smp_init:
 	lea sipi_entry, %esi
 	xor %edi, %edi
 	mov $(sipi_end - sipi_entry), %ecx
-	rep/movsb
+	rep movsb
 	mov $APIC_DEFAULT_PHYS_BASE, %eax
 	movl $(APIC_DEST_ALLBUT | APIC_DEST_PHYSICAL | APIC_DM_INIT | APIC_INT_ASSERT), APIC_ICR(%eax)
 	movl $(APIC_DEST_ALLBUT | APIC_DEST_PHYSICAL | APIC_DM_INIT), APIC_ICR(%eax)
