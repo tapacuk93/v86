@@ -275,6 +275,13 @@ pub const TLB_HAS_CODE: i32 = 1 << 5;
 /// Set when the page may not be used for instruction fetch (NX/XD bit in a PAE paging structure
 /// entry, only meaningful while IA32_EFER.NXE is set)
 pub const TLB_NO_EXEC: i32 = 1 << 6;
+/// rex prefix bits. Only decoded in 64-bit mode, where 0x40-0x4F cease to be inc/dec.
+pub const REX_B: u8 = 1 << 0; // extends modrm.rm, sib.base or the register in the opcode
+pub const REX_X: u8 = 1 << 1; // extends sib.index
+pub const REX_R: u8 = 1 << 2; // extends modrm.reg
+pub const REX_W: u8 = 1 << 3; // 64-bit operand size
+pub const REX_PRESENT: u8 = 1 << 4;
+
 pub const IVT_SIZE: u32 = 0x400;
 pub const CPU_EXCEPTION_DE: i32 = 0;
 pub const CPU_EXCEPTION_DB: i32 = 1;
@@ -3088,9 +3095,8 @@ pub unsafe fn update_cs_size(new_size: bool) {
 }
 
 /// Entering 64-bit mode changes how instructions decode: the 0x40-0x4F opcodes become rex
-/// prefixes, the default address size becomes 64 bits, and the register file gains r8-r15. None of
-/// that is implemented, so this only records the state and complains loudly rather than letting
-/// the 32-bit decoder run over 64-bit code and produce nonsense.
+/// prefixes, the default address size becomes 64 bits, and the register file gains r8-r15. Only
+/// the rex decoding exists so far, so run_instruction_64 traps on the instruction itself.
 pub unsafe fn set_cs_is_64(value: bool) {
     if *is_64 != value {
         *is_64 = value;
@@ -3101,7 +3107,6 @@ pub unsafe fn set_cs_is_64(value: bool) {
             dbg_log!("Left 64-bit mode");
         }
     }
-    dbg_assert!(!value, "TODO: 64-bit code");
 }
 
 #[inline(never)]
@@ -3227,7 +3232,37 @@ pub unsafe fn modrm_resolve(modrm_byte: i32) -> OrPageFault<i32> {
     }
 }
 
-pub unsafe fn run_instruction(opcode: i32) { gen::interpreter::run(opcode as u32) }
+pub unsafe fn run_instruction(opcode: i32) {
+    if config::ENABLE_LONG_MODE && *is_64 {
+        return run_instruction_64(opcode & 0xFF);
+    }
+    gen::interpreter::run(opcode as u32)
+}
+
+/// 64-bit code decodes differently: 0x40-0x4F are rex prefixes rather than inc/dec, the default
+/// address size is 64, and rex.w selects a 64-bit operand size. The instruction implementations
+/// for that don't exist yet, so consume any rex prefix and report exactly what would be needed,
+/// which is more use than decoding 64-bit code as if it were 32-bit and running the wrong thing.
+#[cold]
+unsafe fn run_instruction_64(mut opcode: i32) {
+    *rex = 0;
+    while opcode >= 0x40 && opcode <= 0x4F {
+        *rex = REX_PRESENT | (opcode & 0xF) as u8;
+        opcode = match read_imm8() {
+            Ok(o) => o,
+            Err(()) => return,
+        };
+    }
+    dbg_log!(
+        "Unimplemented 64-bit instruction: opcode={:02x} rex={:02x} eip={:x}",
+        opcode,
+        *rex,
+        *previous_ip
+    );
+    dbg_assert!(false, "Unimplemented 64-bit instruction");
+    *rex = 0;
+    trigger_ud();
+}
 pub unsafe fn run_instruction0f_16(opcode: i32) { gen::interpreter0f::run(opcode as u32) }
 pub unsafe fn run_instruction0f_32(opcode: i32) { gen::interpreter0f::run(opcode as u32 | 0x100) }
 
@@ -4237,9 +4272,19 @@ pub unsafe fn safe_read_write32(addr: i32, instruction: &dyn Fn(i32) -> i32) {
     }
 }
 
-// The registers are 8 bytes apart, so the low byte of each is at index * 8, and ah/ch/dh/bh are
-// the byte above al/cl/dl/bl
-fn get_reg8_index(index: i32) -> i32 { return index << 3 & 24 | index >> 2 & 1; }
+// The registers are 8 bytes apart, so the low byte of each is at index * 8. Without a rex prefix
+// indices 4-7 are ah/ch/dh/bh, the byte above al/cl/dl/bl; with one present they instead become
+// spl/bpl/sil/dil, the low byte of the next four registers.
+unsafe fn get_reg8_index(index: i32) -> i32 {
+    // The rex test compiles out entirely while long mode is disabled, keeping this off the hot
+    // path for 32-bit guests
+    if config::ENABLE_LONG_MODE && 0 != *rex & REX_PRESENT {
+        index << 3
+    }
+    else {
+        index << 3 & 24 | index >> 2 & 1
+    }
+}
 
 pub unsafe fn read_reg8(index: i32) -> i32 {
     dbg_assert!(index >= 0 && index < 8);
@@ -4271,6 +4316,16 @@ pub unsafe fn read_reg32(index: i32) -> i32 {
 pub unsafe fn write_reg32(index: i32, value: i32) {
     dbg_assert!(index >= 0 && index < 8);
     *reg32.offset(get_reg32_index(index) as isize) = value;
+}
+
+pub unsafe fn read_reg64(index: i32) -> i64 {
+    dbg_assert!(index >= 0 && index < 16);
+    *reg64.offset(index as isize)
+}
+
+pub unsafe fn write_reg64(index: i32, value: i64) {
+    dbg_assert!(index >= 0 && index < 16);
+    *reg64.offset(index as isize) = value;
 }
 
 pub unsafe fn read_mmx32s(r: i32) -> i32 { (*fpu_st.offset(r as isize)).mantissa as i32 }
@@ -4808,6 +4863,7 @@ pub unsafe fn reset_cpu() {
 
     *efer = 0;
     *is_64 = false;
+    *rex = 0;
 
     *fpu_stack_empty = 0xFF;
     *fpu_stack_ptr = 0;
