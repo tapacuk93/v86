@@ -1220,12 +1220,20 @@ pub unsafe fn instr_0F30() {
                 trigger_gp(0);
                 return;
             }
+            // lme may only be changed while paging is off, since it is what enabling paging
+            // consults to decide whether to enter long mode
+            if 0 != (*efer ^ low) & EFER_LME && 0 != *cr & CR0_PG {
+                dbg_log!("#gp writing efer.lme while paging is enabled");
+                trigger_gp(0);
+                return;
+            }
             // The nx bit of paging structure entries is only interpreted when nxe is set, so
             // cached translations computed under the old setting have to be discarded
             if 0 != (*efer ^ low) & EFER_NXE {
                 full_clear_tlb();
             }
-            *efer = low & EFER_WRITABLE_MASK;
+            // lma is owned by set_cr0 and must survive a write of the guest-writable bits
+            *efer = low & EFER_WRITABLE_MASK | *efer & EFER_LMA;
         },
         IA32_TIME_STAMP_COUNTER => set_tsc(low as u32, high as u32),
         IA32_BIOS_UPDT_TRIG => {}, // windows xp
@@ -3337,6 +3345,9 @@ pub unsafe fn instr_0FA2() {
             // extended processor signature and feature bits
             // eax (extended family/model/stepping) is reserved on intel
             edx = 1 << 20; // nx
+            if config::ENABLE_LONG_MODE {
+                edx |= 1 << 29; // lm
+            }
         },
 
         // processor brand string, 48 bytes over three leaves, nul-padded
