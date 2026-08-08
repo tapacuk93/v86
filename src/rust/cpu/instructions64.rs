@@ -465,6 +465,15 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // two byte opcodes
+        0x0F => {
+            let opcode2 = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            run_0f(opcode2, wide)
+        },
+
         // nop
         0x90 => true,
 
@@ -649,6 +658,14 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // retf. Long mode uses different descriptor checks than far_return implements, and
+        // reusing it produces a #gp whose handler then needs a 64-bit idt. Refusing keeps the
+        // failure honest rather than reporting a fault that may not be real.
+        0xCB => {
+            dbg_log!("Unimplemented: 64-bit retf");
+            false
+        },
+
         // ret
         0xC3 => {
             match pop64() {
@@ -716,6 +733,142 @@ pub unsafe fn run(opcode: i32) -> bool {
         },
 
         _ => false,
+    }
+}
+
+/// The 0x0F escaped opcodes
+unsafe fn run_0f(opcode: i32, wide: bool) -> bool {
+    match opcode {
+        // jcc rel32
+        0x80..=0x8F => {
+            match read_imm32s() {
+                Ok(offset) => {
+                    if test_condition(opcode & 0xF) {
+                        *instruction_pointer = (*instruction_pointer).wrapping_add(offset);
+                    }
+                },
+                Err(()) => {},
+            }
+            true
+        },
+
+        // setcc r/m8
+        0x90..=0x9F => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let value = test_condition(opcode & 0xF) as i32;
+            let _ = write_rm8(modrm_byte, value);
+            true
+        },
+
+        // cmovcc r, r/m
+        0x40..=0x4F => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            let src = match read_rm(modrm_byte, wide) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            // The destination is written either way: a cmov with a false condition still zero
+            // extends a 32-bit destination
+            let value = if test_condition(opcode & 0xF) { src } else { read_reg64(reg) };
+            write_reg_sized(reg, value, wide);
+            true
+        },
+
+        // movzx r, r/m8 and r/m16
+        0xB6 | 0xB7 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            let value = match read_rm_narrow(modrm_byte, opcode == 0xB7) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            write_reg_sized(reg, value as i64, wide);
+            true
+        },
+
+        // movsx r, r/m8 and r/m16
+        0xBE | 0xBF => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            let value = match read_rm_narrow(modrm_byte, opcode == 0xBF) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let extended = if opcode == 0xBF { value as i16 as i64 } else { value as i8 as i64 };
+            write_reg_sized(reg, extended, wide);
+            true
+        },
+
+        // cpuid
+        0xA2 => {
+            crate::cpu::instructions_0f::instr_0FA2();
+            true
+        },
+
+        // system instructions whose behaviour doesn't change in 64-bit mode
+        0x06 => {
+            crate::cpu::instructions_0f::instr_0F06();
+            true
+        },
+        0x09 => {
+            crate::cpu::instructions_0f::instr_0F09();
+            true
+        },
+        0x0B => {
+            crate::cpu::instructions_0f::instr_0F0B();
+            true
+        },
+        0x30 => {
+            crate::cpu::instructions_0f::instr_0F30();
+            true
+        },
+        0x31 => {
+            crate::cpu::instructions_0f::instr_0F31();
+            true
+        },
+        0x32 => {
+            crate::cpu::instructions_0f::instr_0F32();
+            true
+        },
+        0x77 => {
+            crate::cpu::instructions_0f::instr_0F77();
+            true
+        },
+
+        _ => {
+            dbg_log!("Unimplemented 64-bit 0f opcode {:02x}", opcode);
+            false
+        },
+    }
+}
+
+/// Read an 8 or 16 bit r/m operand, zero extended
+unsafe fn read_rm_narrow(modrm_byte: i32, word: bool) -> OrPageFault<i32> {
+    if modrm_byte >= 0xC0 {
+        let r = modrm_rm(modrm_byte);
+        Ok(if word { read_reg64(r) as i32 & 0xFFFF } else { read_reg8(r) })
+    }
+    else {
+        let addr = resolve_modrm64(modrm_byte)?;
+        if word {
+            safe_read16(addr)
+        }
+        else {
+            safe_read8(addr)
+        }
     }
 }
 
