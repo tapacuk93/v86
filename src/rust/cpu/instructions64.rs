@@ -546,6 +546,54 @@ unsafe fn adc_sbb(dst: i64, src: i64, osize: i32, is_sub: bool) -> i64 {
     result
 }
 
+/// Read the r/m operand and keep the address it resolved to.
+///
+/// The displacement is consumed while resolving, so an instruction that writes the operand back
+/// must reuse this address rather than resolve the modrm a second time. Doing that reads further
+/// bytes as a displacement and leaves the decoder pointing into the middle of the next
+/// instruction. `None` means the operand was a register.
+unsafe fn read_rm_keep_addr(modrm_byte: i32, osize: i32) -> OrPageFault<(i64, Option<i32>)> {
+    if modrm_byte >= 0xC0 {
+        Ok((read_rm(modrm_byte, osize)?, None))
+    }
+    else {
+        let addr = resolve_modrm64(modrm_byte)?;
+        let value = match osize {
+            8 => safe_read8(addr)? as i64,
+            16 => safe_read16(addr)? as i64,
+            32 => safe_read32s(addr)? as u32 as i64,
+            _ => safe_read64s(addr)? as i64,
+        };
+        Ok((value, Some(addr)))
+    }
+}
+
+/// Write back to the operand `read_rm_keep_addr` returned
+unsafe fn write_rm_keep_addr(
+    modrm_byte: i32,
+    addr: Option<i32>,
+    value: i64,
+    osize: i32,
+) -> OrPageFault<()> {
+    match addr {
+        None => {
+            if osize == 8 {
+                write_reg8(modrm_rm(modrm_byte), value as i32);
+            }
+            else {
+                write_reg_sized(modrm_rm(modrm_byte), value, osize);
+            }
+            Ok(())
+        },
+        Some(a) => match osize {
+            8 => safe_write8(a, value as i32 & 0xFF),
+            16 => safe_write16(a, value as i32 & 0xFFFF),
+            32 => safe_write32(a, value as i32),
+            _ => safe_write64(a, value as u64),
+        },
+    }
+}
+
 /// Dispatch one instruction in 64-bit mode. `rex` has already been consumed. Returns false if the
 /// opcode isn't implemented yet, in which case the caller reports it.
 pub unsafe fn run(opcode: i32) -> bool {
@@ -570,12 +618,13 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Err(()) => return true,
             };
             let src = sized(read_reg64(modrm_reg(modrm_byte)), osize);
-            let dst = match read_rm(modrm_byte, osize) {
-                Ok(v) => sized(v, osize),
+            let (raw, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+                Ok(v) => v,
                 Err(()) => return true,
             };
+            let dst = sized(raw, osize);
             if let Some(result) = group1_op(opcode >> 3 & 7, dst, src, osize) {
-                let _ = write_rm(modrm_byte, result, osize);
+                let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
             }
             true
         },
@@ -672,10 +721,11 @@ pub unsafe fn run(opcode: i32) -> bool {
             };
             let to_reg = 0 != opcode & 2;
             let reg = modrm_reg(modrm_byte);
-            let rm = match read_rm(modrm_byte, osize) {
-                Ok(v) => sized(v, osize),
+            let (raw, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+                Ok(v) => v,
                 Err(()) => return true,
             };
+            let rm = sized(raw, osize);
             let r = sized(read_reg64(reg), osize);
             let (dst, src) = if to_reg { (r, rm) } else { (rm, r) };
             if let Some(result) = group1_op(opcode >> 3 & 7, dst, src, osize) {
@@ -683,7 +733,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                     write_reg_sized(reg, result, osize);
                 }
                 else {
-                    let _ = write_rm(modrm_byte, result, osize);
+                    let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
                 }
             }
             true
@@ -708,10 +758,11 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            let dst = match read_rm(modrm_byte, osize) {
-                Ok(v) => sized(v, osize),
+            let (raw, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+                Ok(v) => v,
                 Err(()) => return true,
             };
+            let dst = sized(raw, osize);
             let imm = if opcode == 0x83 {
                 // 0x83 always carries a sign extended byte, whatever the operand size
                 match read_imm8s() {
@@ -726,7 +777,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 }
             };
             if let Some(result) = group1_op(modrm_byte >> 3 & 7, dst, sized(imm, osize), osize) {
-                let _ = write_rm(modrm_byte, result, osize);
+                let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
             }
             true
         },
@@ -737,7 +788,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            let value = match read_rm(modrm_byte, osize) {
+            let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
@@ -752,7 +803,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             };
             match shift_op(modrm_byte >> 3 & 7, value, count, osize) {
                 Some(result) => {
-                    let _ = write_rm(modrm_byte, result, osize);
+                    let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
                     true
                 },
                 None => false,
@@ -765,14 +816,14 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            let value = match read_rm(modrm_byte, osize) {
+            let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
             let count = read_reg8(1 /* cl */);
             match shift_op(modrm_byte >> 3 & 7, value, count, osize) {
                 Some(result) => {
-                    let _ = write_rm(modrm_byte, result, osize);
+                    let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
                     true
                 },
                 None => false,
@@ -873,6 +924,16 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(v) => {
                     let _ = push64(v as i64);
                 },
+                Err(()) => {},
+            }
+            true
+        },
+
+        // mov r8, imm8
+        0xB0..=0xB7 => {
+            let reg = (opcode & 7) | rex_bit(REX_B);
+            match read_imm8() {
+                Ok(v) => write_reg8(reg, v),
                 Err(()) => {},
             }
             true
@@ -982,15 +1043,10 @@ pub unsafe fn run(opcode: i32) -> bool {
             let byte_op = opcode == 0xF6;
             let op = modrm_byte >> 3 & 7;
 
-            let dst = if byte_op {
-                match read_rm8(modrm_byte) {
-                    Ok(v) => v as i8 as i64,
-                    Err(()) => return true,
-                }
-            }
-            else {
-                match read_rm(modrm_byte, osize) {
-                    Ok(v) => sized(v, osize),
+            let (dst, addr) = {
+                let width = if byte_op { 8 } else { osize };
+                match read_rm_keep_addr(modrm_byte, width) {
+                    Ok((v, a)) => (sized(v, width), a),
                     Err(()) => return true,
                 }
             };
@@ -1015,23 +1071,15 @@ pub unsafe fn run(opcode: i32) -> bool {
                 // not: does not affect flags
                 2 => {
                     let r = narrow(!dst, byte_op, osize);
-                    if byte_op {
-                        let _ = write_rm8(modrm_byte, r as i32);
-                    }
-                    else {
-                        let _ = write_rm(modrm_byte, r, osize);
-                    }
+                    let _ =
+                        write_rm_keep_addr(modrm_byte, addr, r, if byte_op { 8 } else { osize });
                 },
                 // neg: 0 - dst, with carry set when the operand was non-zero
                 3 => {
                     let r = narrow(0i64.wrapping_sub(dst), byte_op, osize);
                     set_flags64(0, dst, r, true);
-                    if byte_op {
-                        let _ = write_rm8(modrm_byte, r as i32);
-                    }
-                    else {
-                        let _ = write_rm(modrm_byte, r, osize);
-                    }
+                    let _ =
+                        write_rm_keep_addr(modrm_byte, addr, r, if byte_op { 8 } else { osize });
                 },
                 _ => {
                     dbg_log!("Unimplemented: 64-bit group3 op {}", op);
@@ -1479,7 +1527,48 @@ unsafe fn read_rm_narrow(modrm_byte: i32, word: bool) -> OrPageFault<i32> {
 
 /// 0xFF group, which is where the 64-bit indirect call and jump live
 pub unsafe fn run_ff(modrm_byte: i32) -> bool {
+    // rex.w and a 0x66 prefix apply to inc, dec and push here; the near call and jump are always
+    // 64 bits wide in long mode
+    let osize = if 0 != *rex & REX_W {
+        64
+    }
+    else if 0 != *prefixes & crate::prefix::PREFIX_66 {
+        16
+    }
+    else {
+        32
+    };
+
     match modrm_byte >> 3 & 7 {
+        // inc and dec, which leave carry alone
+        op @ (0 | 1) => {
+            let (raw, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let dst = sized(raw, osize);
+            let carry = getcf();
+            let result =
+                if op == 0 { group1_op(0, dst, 1, osize) } else { group1_op(5, dst, 1, osize) };
+            // inc and dec are add and sub that do not touch carry
+            *flags_changed &= !FLAG_CARRY;
+            *flags = *flags & !FLAG_CARRY | if carry { FLAG_CARRY } else { 0 };
+            if let Some(result) = result {
+                let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
+            }
+            true
+        },
+
+        // push r/m, always eight bytes wide
+        6 => {
+            let value = match read_rm(modrm_byte, 64) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let _ = push64(value);
+            true
+        },
+
         // call r/m64. Near calls default to a 64-bit operand size, rex.w or not
         2 => {
             let target = match read_rm(modrm_byte, 64) {
