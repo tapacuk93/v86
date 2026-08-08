@@ -177,12 +177,26 @@ fn sse_read64_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
 /// register first, so this removes both the copy and the call. Everything here is 16-byte aligned:
 /// reg_xmm and sse_scratch_register both sit on 16-byte boundaries.
 fn sse_simd_binop_xmm_xmm(ctx: &mut JitContext, op: fn(&mut WasmBuilder), r_src: u32, r_dest: u32) {
+    sse_simd_binop_xmm_xmm_ordered(ctx, op, r_src, r_dest, false)
+}
+
+/// `swapped` puts the source operand on the stack first. pandn needs it: x86 computes
+/// `(not dest) and src`, while wasm's v128.andnot computes `a and (not b)` for a stack of [a, b],
+/// so the operands go on in the other order.
+fn sse_simd_binop_xmm_xmm_ordered(
+    ctx: &mut JitContext,
+    op: fn(&mut WasmBuilder),
+    r_src: u32,
+    r_dest: u32,
+    swapped: bool,
+) {
     let dest = global_pointers::get_reg_xmm_offset(r_dest);
+    let src = global_pointers::get_reg_xmm_offset(r_src);
+    let (first, second) = if swapped { (src, dest) } else { (dest, src) };
     ctx.builder.const_i32(dest as i32);
-    ctx.builder.const_i32(dest as i32);
+    ctx.builder.const_i32(first as i32);
     ctx.builder.load_aligned_v128(0);
-    ctx.builder
-        .const_i32(global_pointers::get_reg_xmm_offset(r_src) as i32);
+    ctx.builder.const_i32(second as i32);
     ctx.builder.load_aligned_v128(0);
     op(ctx.builder);
     ctx.builder.store_aligned_v128(0);
@@ -194,15 +208,26 @@ fn sse_simd_binop_xmm_mem(
     modrm_byte: ModrmByte,
     r_dest: u32,
 ) {
+    sse_simd_binop_xmm_mem_ordered(ctx, op, modrm_byte, r_dest, false)
+}
+
+fn sse_simd_binop_xmm_mem_ordered(
+    ctx: &mut JitContext,
+    op: fn(&mut WasmBuilder),
+    modrm_byte: ModrmByte,
+    r_dest: u32,
+    swapped: bool,
+) {
     // The memory operand still goes through the checked 128-bit read, which lands it in the
     // scratch register; only the operation itself becomes inline
     let scratch = global_pointers::sse_scratch_register as u32;
     codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, scratch);
     let dest = global_pointers::get_reg_xmm_offset(r_dest);
+    let (first, second) = if swapped { (scratch, dest) } else { (dest, scratch) };
     ctx.builder.const_i32(dest as i32);
-    ctx.builder.const_i32(dest as i32);
+    ctx.builder.const_i32(first as i32);
     ctx.builder.load_aligned_v128(0);
-    ctx.builder.const_i32(scratch as i32);
+    ctx.builder.const_i32(second as i32);
     ctx.builder.load_aligned_v128(0);
     op(ctx.builder);
     ctx.builder.store_aligned_v128(0);
@@ -7444,10 +7469,10 @@ pub fn instr_660FDE_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     sse_read128_xmm_xmm(ctx, "instr_660FDE", r1, r2);
 }
 pub fn instr_660FDF_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_simd_binop_xmm_mem(ctx, WasmBuilder::andnot_v128, modrm_byte, r);
+    sse_simd_binop_xmm_mem_ordered(ctx, WasmBuilder::andnot_v128, modrm_byte, r, true);
 }
 pub fn instr_660FDF_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::andnot_v128, r1, r2);
+    sse_simd_binop_xmm_xmm_ordered(ctx, WasmBuilder::andnot_v128, r1, r2, true);
 }
 
 pub fn instr_0FE0_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
