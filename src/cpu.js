@@ -201,7 +201,7 @@ export function CPU(bus, wm, stop_idling)
     this.fpu_dp_selector = view(Int32Array, memory, 1060, 1);
     this.fpu_dp_selector[0] = 0;
 
-    this.reg_xmm32s = view(Int32Array, memory, 832, 8 * 4);
+    this.reg_xmm32s = view(Int32Array, memory, 1280, 16 * 4);
 
     this.mxcsr = view(Int32Array, memory, 824, 1);
 
@@ -571,7 +571,7 @@ CPU.prototype.get_state = function()
 
     state[64] = this.tss_size_32[0];
 
-    state[66] = this.reg_xmm32s;
+    state[66] = this.reg_xmm32s.subarray(0, 8 * 4);
 
     state[67] = this.fpu_st;
     state[68] = this.fpu_stack_empty[0];

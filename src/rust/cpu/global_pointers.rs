@@ -72,7 +72,7 @@ pub const memory_size: *mut u32 = 812 as *mut u32;
 pub const fpu_stack_empty: *mut u8 = 816 as *mut u8;
 pub const mxcsr: *mut i32 = 824 as *mut i32;
 
-pub const reg_xmm: *mut reg128 = 832 as *mut reg128;
+// (832 was reg_xmm, which moved to make room for xmm8-15)
 pub const current_tsc: *mut u64 = 960 as *mut u64;
 
 pub const reg_pdpte: *mut u64 = 968 as *mut u64; // 4 64-bit entries
@@ -89,7 +89,11 @@ pub const tss_size_32: *mut bool = 1128 as *mut bool;
 
 pub const sse_scratch_register: *mut reg128 = 1136 as *mut reg128;
 
-pub const fpu_st: *mut F80 = 1152 as *mut F80;
+pub const fpu_st: *mut F80 = 1152 as *mut F80; // 8 80-bit entries, to 1280
+
+// Sixteen xmm registers, which no longer fit where eight did: 960 onward is the tsc, the pdpte
+// cache and the fpu state.
+pub const reg_xmm: *mut reg128 = 1280 as *mut reg128; // 16 128-bit entries, to 1536
 
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);
@@ -107,7 +111,7 @@ pub fn get_reg_mmx_offset(r: u32) -> u32 {
 }
 
 pub fn get_reg_xmm_offset(r: u32) -> u32 {
-    dbg_assert!(r < 8);
+    dbg_assert!(r < 16);
     (unsafe { reg_xmm.offset(r as isize) }) as u32
 }
 

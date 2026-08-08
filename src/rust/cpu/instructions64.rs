@@ -477,22 +477,15 @@ unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i6
 }
 
 /// An sse instruction whose behaviour is identical in 64-bit mode, delegated to its existing
-/// implementation.
-///
-/// rex.r and rex.b would reach xmm8-15, which v86 has no room for: reg_xmm holds eight. Those
-/// encodings are refused rather than silently aliased onto the low eight.
+/// implementation. rex.r and rex.b extend the register fields to xmm8-15.
 unsafe fn sse_delegate(
     modrm_byte: i32,
     reg_fn: unsafe fn(i32, i32),
     mem_fn: unsafe fn(i32, i32),
 ) -> bool {
-    if 0 != *rex & (REX_R | REX_B) {
-        dbg_log!("Unimplemented: xmm8-15");
-        return false;
-    }
-    let r = modrm_byte >> 3 & 7;
+    let r = modrm_reg(modrm_byte);
     if modrm_byte >= 0xC0 {
-        reg_fn(modrm_byte & 7, r);
+        reg_fn(modrm_rm(modrm_byte), r);
     }
     else {
         match resolve_modrm64(modrm_byte) {
