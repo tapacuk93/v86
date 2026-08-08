@@ -2,7 +2,71 @@ import { pads } from "../lib.js";
 
 export function stats_to_string(cpu)
 {
-    return print_misc_stats(cpu) + print_instruction_counts(cpu);
+    return print_misc_stats(cpu) + print_timers(cpu) + print_hot_pages(cpu) + print_instruction_counts(cpu);
+}
+
+// Must match the timer enum in profiler.rs
+const TIMER_NAMES = ["MAIN_LOOP", "IDLE", "COMPILE"];
+
+// Wall clock time, as opposed to the event counts above. Answers where the emulator itself spends
+// its time, rather than what the guest is doing.
+function print_timers(cpu)
+{
+    let text = "\nTime (ms):\n";
+
+    const total = cpu.wm.exports["profiler_timer_get"](0);
+
+    for(let i = 0; i < TIMER_NAMES.length; i++)
+    {
+        const ms = cpu.wm.exports["profiler_timer_get"](i);
+        const share = total ? " (" + (100 * ms / total).toFixed(1) + "% of MAIN_LOOP)" : "";
+        text += TIMER_NAMES[i] + "=" + ms.toFixed(1) + (i === 0 ? "" : share) + "\n";
+    }
+
+    return text;
+}
+
+const HOT_PAGES_SHOWN = 30;
+
+// Where the guest spends its time, split by whether that time was spent in compiled code or in the
+// interpreter. Pages high in this list that are mostly interpreted are the ones worth investigating
+// first: they are hot code the jit isn't covering.
+function print_hot_pages(cpu)
+{
+    const count = cpu.wm.exports["profiler_hot_pages_sort"]();
+
+    if(!count)
+    {
+        return "";
+    }
+
+    let total_steps = 0;
+    for(let i = 0; i < count; i++)
+    {
+        total_steps += cpu.wm.exports["profiler_hot_pages_get"](i, 3) + cpu.wm.exports["profiler_hot_pages_get"](i, 4);
+    }
+
+    let text = "\nHottest guest pages (" + count + " total, showing " + Math.min(count, HOT_PAGES_SHOWN) + "):\n";
+    text += pads("ADDRESS", 12) + pads("CPL", 4) + pads("STEPS", 12) + pads("SHARE", 8) + pads("JIT%", 7) + "ENTRIES\n";
+
+    for(let i = 0; i < Math.min(count, HOT_PAGES_SHOWN); i++)
+    {
+        const address = cpu.wm.exports["profiler_hot_pages_get"](i, 0);
+        const cpl3 = cpu.wm.exports["profiler_hot_pages_get"](i, 1);
+        const entries = cpu.wm.exports["profiler_hot_pages_get"](i, 2);
+        const compiled = cpu.wm.exports["profiler_hot_pages_get"](i, 3);
+        const interpreted = cpu.wm.exports["profiler_hot_pages_get"](i, 4);
+        const steps = compiled + interpreted;
+
+        text += pads("0x" + (address >>> 0).toString(16).padStart(8, "0"), 12);
+        text += pads(cpl3 ? "3" : "0", 4);
+        text += pads(steps, 12);
+        text += pads((100 * steps / total_steps).toFixed(1) + "%", 8);
+        text += pads(steps ? (100 * compiled / steps).toFixed(0) + "%" : "-", 7);
+        text += entries + "\n";
+    }
+
+    return text;
 }
 
 function print_misc_stats(cpu)
