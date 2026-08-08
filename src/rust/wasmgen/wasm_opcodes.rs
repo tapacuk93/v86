@@ -219,3 +219,25 @@ c!(MEM_NO_ALIGN, 0);
 c!(MEM_ALIGN16, 1);
 c!(MEM_ALIGN32, 2);
 c!(MEM_ALIGN64, 3);
+
+c!(MEM_ALIGN128, 4);
+
+// SIMD instructions are all prefixed with 0xFD followed by a leb128 opcode.
+// https://webassembly.github.io/spec/core/binary/instructions.html#vector-instructions
+c!(OP_SIMD_PREFIX, 0xFD);
+
+// These are the leb128 payloads, not bytes, so anything above 0x7F encodes as two bytes
+pub const SIMD_V128LOAD: u32 = 0x00;
+pub const SIMD_V128STORE: u32 = 0x0B;
+pub const SIMD_V128AND: u32 = 0x4E;
+pub const SIMD_V128ANDNOT: u32 = 0x4F;
+pub const SIMD_V128OR: u32 = 0x50;
+pub const SIMD_V128XOR: u32 = 0x51;
+pub const SIMD_I8X16ADD: u32 = 0x6E;
+pub const SIMD_I8X16SUB: u32 = 0x71;
+pub const SIMD_I16X8ADD: u32 = 0x8E;
+pub const SIMD_I16X8SUB: u32 = 0x91;
+pub const SIMD_I32X4ADD: u32 = 0xAE;
+pub const SIMD_I32X4SUB: u32 = 0xB1;
+pub const SIMD_I64X2ADD: u32 = 0xCE;
+pub const SIMD_I64X2SUB: u32 = 0xD1;

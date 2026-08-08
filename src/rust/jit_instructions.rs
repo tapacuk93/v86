@@ -171,6 +171,43 @@ fn sse_read64_xmm_xmm(ctx: &mut JitContext, name: &str, r1: u32, r2: u32) {
     ctx.builder.call_fn2_i64_i32(name);
 }
 
+/// A packed sse operation that maps onto a single wasm simd instruction.
+///
+/// The alternative is a call into the rust implementation with the operand copied into a scratch
+/// register first, so this removes both the copy and the call. Everything here is 16-byte aligned:
+/// reg_xmm and sse_scratch_register both sit on 16-byte boundaries.
+fn sse_simd_binop_xmm_xmm(ctx: &mut JitContext, op: fn(&mut WasmBuilder), r_src: u32, r_dest: u32) {
+    let dest = global_pointers::get_reg_xmm_offset(r_dest);
+    ctx.builder.const_i32(dest as i32);
+    ctx.builder.const_i32(dest as i32);
+    ctx.builder.load_aligned_v128(0);
+    ctx.builder
+        .const_i32(global_pointers::get_reg_xmm_offset(r_src) as i32);
+    ctx.builder.load_aligned_v128(0);
+    op(ctx.builder);
+    ctx.builder.store_aligned_v128(0);
+}
+
+fn sse_simd_binop_xmm_mem(
+    ctx: &mut JitContext,
+    op: fn(&mut WasmBuilder),
+    modrm_byte: ModrmByte,
+    r_dest: u32,
+) {
+    // The memory operand still goes through the checked 128-bit read, which lands it in the
+    // scratch register; only the operation itself becomes inline
+    let scratch = global_pointers::sse_scratch_register as u32;
+    codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, scratch);
+    let dest = global_pointers::get_reg_xmm_offset(r_dest);
+    ctx.builder.const_i32(dest as i32);
+    ctx.builder.const_i32(dest as i32);
+    ctx.builder.load_aligned_v128(0);
+    ctx.builder.const_i32(scratch as i32);
+    ctx.builder.load_aligned_v128(0);
+    op(ctx.builder);
+    ctx.builder.store_aligned_v128(0);
+}
+
 fn sse_read128_xmm_mem(ctx: &mut JitContext, name: &str, modrm_byte: ModrmByte, r: u32) {
     let dest = global_pointers::sse_scratch_register as u32;
     codegen::gen_modrm_resolve_safe_read128(ctx, modrm_byte, dest);
@@ -7321,10 +7358,10 @@ pub fn instr_660FD3_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     sse_read128_xmm_xmm(ctx, "instr_660FD3", r1, r2);
 }
 pub fn instr_660FD4_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FD4", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::add_i64x2, modrm_byte, r);
 }
 pub fn instr_660FD4_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FD4", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::add_i64x2, r1, r2);
 }
 pub fn instr_660FD5_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     sse_read128_xmm_mem(ctx, "instr_660FD5", modrm_byte, r);
@@ -7383,10 +7420,10 @@ pub fn instr_660FDA_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     sse_read128_xmm_xmm(ctx, "instr_660FDA", r1, r2);
 }
 pub fn instr_660FDB_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FDB", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::and_v128, modrm_byte, r);
 }
 pub fn instr_660FDB_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FDB", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::and_v128, r1, r2);
 }
 pub fn instr_660FDC_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     sse_read128_xmm_mem(ctx, "instr_660FDC", modrm_byte, r);
@@ -7407,10 +7444,10 @@ pub fn instr_660FDE_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     sse_read128_xmm_xmm(ctx, "instr_660FDE", r1, r2);
 }
 pub fn instr_660FDF_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FDF", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::andnot_v128, modrm_byte, r);
 }
 pub fn instr_660FDF_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FDF", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::andnot_v128, r1, r2);
 }
 
 pub fn instr_0FE0_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
@@ -7581,10 +7618,10 @@ pub fn instr_660FEA_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     sse_read128_xmm_xmm(ctx, "instr_660FEA", r1, r2);
 }
 pub fn instr_660FEB_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FEB", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::or_v128, modrm_byte, r);
 }
 pub fn instr_660FEB_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FEB", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::or_v128, r1, r2);
 }
 pub fn instr_660FEC_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
     sse_read128_xmm_mem(ctx, "instr_660FEC", modrm_byte, r);
@@ -7605,10 +7642,10 @@ pub fn instr_660FEE_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
     sse_read128_xmm_xmm(ctx, "instr_660FEE", r1, r2);
 }
 pub fn instr_660FEF_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FEF", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::xor_v128, modrm_byte, r);
 }
 pub fn instr_660FEF_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FEF", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::xor_v128, r1, r2);
 }
 
 pub fn instr_0FF1_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
@@ -7769,44 +7806,44 @@ pub fn instr_660FF7_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
 }
 
 pub fn instr_660FF8_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FF8", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::sub_i8x16, modrm_byte, r);
 }
 pub fn instr_660FF8_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FF8", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::sub_i8x16, r1, r2);
 }
 pub fn instr_660FF9_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FF9", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::sub_i16x8, modrm_byte, r);
 }
 pub fn instr_660FF9_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FF9", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::sub_i16x8, r1, r2);
 }
 pub fn instr_660FFA_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FFA", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::sub_i32x4, modrm_byte, r);
 }
 pub fn instr_660FFA_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FFA", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::sub_i32x4, r1, r2);
 }
 pub fn instr_660FFB_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FFB", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::sub_i64x2, modrm_byte, r);
 }
 pub fn instr_660FFB_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FFB", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::sub_i64x2, r1, r2);
 }
 pub fn instr_660FFC_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FFC", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::add_i8x16, modrm_byte, r);
 }
 pub fn instr_660FFC_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FFC", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::add_i8x16, r1, r2);
 }
 pub fn instr_660FFD_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FFD", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::add_i16x8, modrm_byte, r);
 }
 pub fn instr_660FFD_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FFD", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::add_i16x8, r1, r2);
 }
 pub fn instr_660FFE_mem_jit(ctx: &mut JitContext, modrm_byte: ModrmByte, r: u32) {
-    sse_read128_xmm_mem(ctx, "instr_660FFE", modrm_byte, r);
+    sse_simd_binop_xmm_mem(ctx, WasmBuilder::add_i32x4, modrm_byte, r);
 }
 pub fn instr_660FFE_reg_jit(ctx: &mut JitContext, r1: u32, r2: u32) {
-    sse_read128_xmm_xmm(ctx, "instr_660FFE", r1, r2);
+    sse_simd_binop_xmm_xmm(ctx, WasmBuilder::add_i32x4, r1, r2);
 }

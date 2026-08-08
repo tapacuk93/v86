@@ -791,6 +791,36 @@ impl WasmBuilder {
     pub fn add_i32(&mut self) { self.instruction_body.push(op::OP_I32ADD); }
     pub fn add_i64(&mut self) { self.instruction_body.push(op::OP_I64ADD); }
     pub fn sub_i32(&mut self) { self.instruction_body.push(op::OP_I32SUB); }
+    /// Emit a simd instruction, which is the 0xFD prefix followed by a leb128 opcode
+    fn simd_op(&mut self, opcode: u32) {
+        self.instruction_body.push(op::OP_SIMD_PREFIX);
+        write_leb_u32(&mut self.instruction_body, opcode);
+    }
+
+    pub fn load_aligned_v128(&mut self, byte_offset: u32) {
+        self.simd_op(op::SIMD_V128LOAD);
+        self.instruction_body.push(op::MEM_ALIGN128);
+        write_leb_u32(&mut self.instruction_body, byte_offset);
+    }
+    pub fn store_aligned_v128(&mut self, byte_offset: u32) {
+        self.simd_op(op::SIMD_V128STORE);
+        self.instruction_body.push(op::MEM_ALIGN128);
+        write_leb_u32(&mut self.instruction_body, byte_offset);
+    }
+
+    pub fn and_v128(&mut self) { self.simd_op(op::SIMD_V128AND); }
+    pub fn or_v128(&mut self) { self.simd_op(op::SIMD_V128OR); }
+    pub fn xor_v128(&mut self) { self.simd_op(op::SIMD_V128XOR); }
+    pub fn andnot_v128(&mut self) { self.simd_op(op::SIMD_V128ANDNOT); }
+    pub fn add_i8x16(&mut self) { self.simd_op(op::SIMD_I8X16ADD); }
+    pub fn sub_i8x16(&mut self) { self.simd_op(op::SIMD_I8X16SUB); }
+    pub fn add_i16x8(&mut self) { self.simd_op(op::SIMD_I16X8ADD); }
+    pub fn sub_i16x8(&mut self) { self.simd_op(op::SIMD_I16X8SUB); }
+    pub fn add_i32x4(&mut self) { self.simd_op(op::SIMD_I32X4ADD); }
+    pub fn sub_i32x4(&mut self) { self.simd_op(op::SIMD_I32X4SUB); }
+    pub fn add_i64x2(&mut self) { self.simd_op(op::SIMD_I64X2ADD); }
+    pub fn sub_i64x2(&mut self) { self.simd_op(op::SIMD_I64X2SUB); }
+
     pub fn and_i32(&mut self) { self.instruction_body.push(op::OP_I32AND); }
     pub fn or_i32(&mut self) { self.instruction_body.push(op::OP_I32OR); }
     pub fn or_i64(&mut self) { self.instruction_body.push(op::OP_I64OR); }
