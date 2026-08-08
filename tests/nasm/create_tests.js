@@ -14,9 +14,9 @@ import Rand from "./rand.js";
 const __dirname = url.fileURLToPath(new URL(".", import.meta.url));
 
 // number of tests per instruction
-const NUMBER_TESTS = 5;
+const NUMBER_TESTS = +process.env.NUMBER_TESTS || 5;
 // arithmetic tests
-const NUMBER_ARITH_TESTS = 100;
+const NUMBER_ARITH_TESTS = +process.env.NUMBER_ARITH_TESTS || 100;
 
 const MAX_PARALLEL_PROCS = +process.env.MAX_PARALLEL_PROCS || 32;
 
