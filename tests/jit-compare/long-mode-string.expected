@@ -1,0 +1,11 @@
+; What long-mode-string.asm leaves behind. Measured on a real x86-64 under rosetta, see
+; long-mode-string-oracle.c; the two rdi values are relative to the fixture's buffer at 0x6000.
+r8  = abababababababab     ; rep stosb filled all sixteen bytes
+r9  = 0000000000006010     ; rdi advanced by the count
+r10 = 0000000000000000     ; and rcx drained
+r11 = abababababababab     ; rep movsq copied them
+r12 = 0000000000000000     ; repne scasb ran the count out looking for a byte that is not there
+r13 = 0000000000000000     ; zf clear, so it stopped on the count rather than a match
+r14 = 000000000000000f     ; the byte that is there matched first time, leaving fifteen
+r15 = 000000000000602c     ; with df set, stos walked backwards
+rbp = 777777ababababab     ; writing the three bytes of this qword it reached

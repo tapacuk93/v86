@@ -645,6 +645,109 @@ unsafe fn mul_div_op(op: i32, src: i64, w: i32) {
     }
 }
 
+/// The string instructions - movs, cmps, stos, lods and scas - in 64-bit mode.
+///
+/// Much simpler than their 16- and 32-bit forms, which is why they are here rather than delegated:
+/// the address size is 64 rather than 16 or 32, and every segment base is zero, so rsi and rdi are
+/// the addresses. Direction still comes from df, and the rep prefixes still count rcx down.
+///
+/// Both addresses are at full width, which matters because windows clears kernel structures with
+/// `rep stos` through addresses well above 4 GiB.
+///
+/// A fault partway through leaves rsi, rdi and rcx where the faulting iteration found them, which
+/// is what makes these restartable - so they are written back each time round rather than at the
+/// end.
+unsafe fn string_op(opcode: i32, osize: i32) -> bool {
+    let width = if opcode & 1 == 0 { 8 } else { osize };
+    let bytes = (width / 8) as i64;
+    let step = if 0 != *flags & FLAG_DIRECTION { -bytes } else { bytes };
+
+    let repz = 0 != *prefixes & crate::prefix::PREFIX_F3;
+    let repnz = 0 != *prefixes & crate::prefix::PREFIX_F2;
+    let rep = repz || repnz;
+    // only cmps and scas consult zf to decide whether to keep going; for the rest any rep is
+    // simply a count
+    let compares = matches!(opcode, 0xA6 | 0xA7 | 0xAE | 0xAF);
+
+    unsafe fn read_at(addr: i64, width: i32) -> OrPageFault<i64> {
+        Ok(match width {
+            8 => safe_read8_64(addr)? as i64,
+            16 => safe_read16_64(addr)? as i64,
+            32 => safe_read32s_64(addr)? as u32 as i64,
+            _ => safe_read64s_64(addr)? as i64,
+        })
+    }
+    unsafe fn write_at(addr: i64, value: i64, width: i32) -> OrPageFault<()> {
+        match width {
+            8 => safe_write8_64(addr, value as i32 & 0xFF),
+            16 => safe_write16_64(addr, value as i32 & 0xFFFF),
+            32 => safe_write32_64(addr, value as i32),
+            _ => safe_write64_64(addr, value as u64),
+        }
+    }
+
+    loop {
+        if rep && read_reg64(ECX) == 0 {
+            break;
+        }
+
+        let rsi = read_reg64(ESI);
+        let rdi = read_reg64(EDI);
+
+        let result = (|| -> OrPageFault<()> {
+            match opcode {
+                // movs
+                0xA4 | 0xA5 => {
+                    let v = read_at(rsi, width)?;
+                    write_at(rdi, v, width)?;
+                    write_reg64(ESI, rsi + step);
+                    write_reg64(EDI, rdi + step);
+                },
+                // cmps, which subtracts the destination from the source
+                0xA6 | 0xA7 => {
+                    let a = sized(read_at(rsi, width)?, width);
+                    let b = sized(read_at(rdi, width)?, width);
+                    set_flags64(a, b, sized(a.wrapping_sub(b), width), true);
+                    write_reg64(ESI, rsi + step);
+                    write_reg64(EDI, rdi + step);
+                },
+                // stos
+                0xAA | 0xAB => {
+                    write_at(rdi, read_reg64(EAX), width)?;
+                    write_reg64(EDI, rdi + step);
+                },
+                // lods
+                0xAC | 0xAD => {
+                    let v = read_at(rsi, width)?;
+                    write_reg_sized(EAX, v, width);
+                    write_reg64(ESI, rsi + step);
+                },
+                // scas, which subtracts the destination from the accumulator
+                _ => {
+                    let a = sized(read_reg64(EAX), width);
+                    let b = sized(read_at(rdi, width)?, width);
+                    set_flags64(a, b, sized(a.wrapping_sub(b), width), true);
+                    write_reg64(EDI, rdi + step);
+                },
+            }
+            Ok(())
+        })();
+
+        if result.is_err() {
+            return true;
+        }
+
+        if !rep {
+            break;
+        }
+        write_reg64(ECX, read_reg64(ECX) - 1);
+        if compares && getzf() != repz {
+            break;
+        }
+    }
+    true
+}
+
 unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i64> {
     let count = raw_count & if osize == 64 { 63 } else { 31 };
     if count == 0 {
@@ -1866,6 +1969,11 @@ pub unsafe fn run(opcode: i32) -> bool {
         },
 
         // ret
+        // the string instructions, with or without a rep prefix
+        0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAC | 0xAD | 0xAE | 0xAF => {
+            string_op(opcode, osize)
+        },
+
         0xC3 => {
             match pop64() {
                 Ok(target) => match truncate_address(target) {
