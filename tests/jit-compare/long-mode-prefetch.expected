@@ -1,0 +1,4 @@
+; What long-mode-prefetch.asm leaves behind. The counter is the point: it only reaches 4 if every
+; hint consumed exactly its own operand and none of them faulted.
+r8  = 0000000000000004     ; one inc after each hint, all of them decoded at the right offset
+r9  = 000000000000600d     ; including the one behind an unmapped address, which must not fault

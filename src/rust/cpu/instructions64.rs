@@ -2815,6 +2815,25 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
+        // the prefetch hints and the reserved nops beside them. They do nothing, but the operand
+        // still has to be consumed or decoding carries on inside it - and it is only resolved,
+        // never accessed, since a prefetch of an unmapped address is defined not to fault.
+        //
+        // 0x1f, the multi-byte nop, is handled separately above; f3 0f 1e is endbr64, which lands
+        // here and is equally a nop.
+        0x18..=0x1E => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            if modrm_byte < 0xC0 {
+                if resolve_modrm64(modrm_byte).is_err() {
+                    return true;
+                }
+            }
+            true
+        },
+
         // cpuid
         0xA2 => {
             crate::cpu::instructions_0f::instr_0FA2();
