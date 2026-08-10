@@ -1016,6 +1016,33 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // cbw/cwde/cdqe: widen the accumulator in place, keeping its sign. write_reg_sized gives
+        // the right discard for each width, since a 32-bit write clears the top half and a 16-bit
+        // one leaves it.
+        0x98 => {
+            let rax = read_reg64(EAX);
+            let extended = match osize {
+                16 => rax as i8 as i64,
+                32 => rax as i16 as i64,
+                _ => rax as i32 as i64,
+            };
+            write_reg_sized(EAX, extended, osize);
+            true
+        },
+
+        // cwd/cdq/cqo: fill the whole of rdx with the accumulator's sign bit, which is how a
+        // signed dividend is widened before idiv.
+        0x99 => {
+            let rax = read_reg64(EAX);
+            let negative = match osize {
+                16 => (rax as i16) < 0,
+                32 => (rax as i32) < 0,
+                _ => rax < 0,
+            };
+            write_reg_sized(EDX, if negative { -1 } else { 0 }, osize);
+            true
+        },
+
         // push r
         0x50..=0x57 => {
             let reg = (opcode & 7) | rex_bit(REX_B);

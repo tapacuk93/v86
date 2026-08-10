@@ -1,0 +1,9 @@
+; What cdqe and cqo are defined to leave behind for each case in long-mode-cdqe.asm.
+rbx = ffffffff80000001     ; cdqe on a negative eax
+rcx = 000000007fffffff     ; cdqe on a positive one clears the stale top half
+rsi = ffffffffffffffff     ; cqo with rax negative fills rdx
+rdi = fffffffffffffffe     ; and leaves rax as it was
+r8  = 0000000000000000     ; cqo with rax positive clears rdx
+r9  = ffffffffffffffff     ; bit 63 set is negative
+r10 = 0000000000000000     ; bit 62 set is not
+r11 = 00000000ffffffff     ; cdq writes edx, so the top half of rdx is cleared
