@@ -37,8 +37,9 @@ function run(use_jit) {
             cpu.is_32[0] = true;
             cpu.stack_size_32[0] = true;
             cpu.mem8.set(executable, START);
-            const xmm = new Int32Array(cpu.wasm_memory.buffer, 832, 32);
-            for(let r = 0; r < 8; r++)
+            // reg_xmm, sixteen 128-bit registers
+            const xmm = new Int32Array(cpu.wasm_memory.buffer, 1280, 16 * 4);
+            for(let r = 0; r < 16; r++)
                 for(let i = 0; i < 4; i++)
                     xmm[r * 4 + i] = (XMM0[i] ^ (r * 0x11111111)) | 0;
             for(let i = 0; i < 4; i++) xmm[4 + i] = XMM1[i];
@@ -48,7 +49,7 @@ function run(use_jit) {
             const execute = () => {
                 for(let i = 0; i < 200 && !cpu.in_hlt[0]; i++) cpu.main_loop();
                 const out = [];
-                for(let i = 0; i < 32; i++) out.push(xmm[i] >>> 0);
+                for(let i = 0; i < 16 * 4; i++) out.push(xmm[i] >>> 0);
                 // the general purpose registers, 16 of them, 64 bits each
                 const gpr = new Int32Array(cpu.wasm_memory.buffer, 128, 32);
                 for(let i = 0; i < 32; i++) out.push(gpr[i] >>> 0);
@@ -89,7 +90,9 @@ if(!b.compiled) { console.log("NOTHING RAN COMPILED - comparison is vacuous"); p
 let ok = true;
 for(let i = 0; i < a.regs.length; i++)
     if(a.regs[i] !== b.regs[i]) {
-        const name = i < 32 ? `xmm${i >> 2}[${i & 3}]` : `r${(i - 32) >> 1}.dword${(i - 32) & 1}`;
+        const name = i < 16 * 4 ?
+            `xmm${i >> 2}[${i & 3}]` :
+            `r${(i - 16 * 4) >> 1}.dword${(i - 16 * 4) & 1}`;
         console.log(`MISMATCH ${name}: interp=${a.regs[i].toString(16)} jit=${b.regs[i].toString(16)}`);
         ok = false;
     }
