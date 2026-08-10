@@ -1,0 +1,3 @@
+; What long-mode-ret-imm.asm leaves behind.
+r8  = 0000000000007000     ; the return address popped and both argument slots dropped
+r9  = 000000000000600d     ; reached, so control came back to the right place

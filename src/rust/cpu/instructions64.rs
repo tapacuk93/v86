@@ -1878,6 +1878,27 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // ret imm16, which drops the caller's arguments after taking the return address. The
+        // immediate is read before the pop, since a fault in the pop must leave rsp where it was.
+        0xC2 => {
+            let imm = match read_imm16() {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            match pop64() {
+                Ok(target) => match truncate_address(target) {
+                    Ok(a) => {
+                        *instruction_pointer = a;
+                        write_reg64(ESP, read_reg64(ESP) + imm as i64);
+                    },
+                    Err(()) => {},
+                },
+                Err(()) => {},
+            }
+            after_block_boundary();
+            true
+        },
+
         // jcc rel8
         0x70..=0x7F => {
             match read_imm8s() {
