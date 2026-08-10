@@ -431,6 +431,7 @@ unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i6
         // shr, which is logical and so needs the value zero extended to its own width first
         5 => {
             let unsigned = match osize {
+                8 => value as u8 as u64,
                 16 => value as u16 as u64,
                 32 => value as u32 as u64,
                 _ => value as u64,
@@ -460,14 +461,11 @@ unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i6
     else {
         *last_result = result as i32;
     }
-    *last_op_size = if osize == 64 {
-        OPSIZE_64
-    }
-    else if osize == 32 {
-        OPSIZE_32
-    }
-    else {
-        OPSIZE_16
+    *last_op_size = match osize {
+        64 => OPSIZE_64,
+        32 => OPSIZE_32,
+        16 => OPSIZE_16,
+        _ => OPSIZE_8,
     };
     *flags_changed = FLAGS_ALL & !FLAG_CARRY & !FLAG_OVERFLOW;
     *flags = *flags & !FLAG_CARRY & !FLAG_OVERFLOW
@@ -557,7 +555,15 @@ unsafe fn adc_sbb(dst: i64, src: i64, osize: i32, is_sub: bool) -> i64 {
 /// instruction. `None` means the operand was a register.
 unsafe fn read_rm_keep_addr(modrm_byte: i32, osize: i32) -> OrPageFault<(i64, Option<i32>)> {
     if modrm_byte >= 0xC0 {
-        Ok((read_rm(modrm_byte, osize)?, None))
+        // read_rm has no byte case and would hand back the whole register, so the byte operand is
+        // read here. The memory path below does handle 8, so only this side was missing it.
+        let value = if osize == 8 {
+            read_reg8(modrm_rm(modrm_byte)) as i64
+        }
+        else {
+            read_rm(modrm_byte, osize)?
+        };
+        Ok((value, None))
     }
     else {
         let addr = resolve_modrm64(modrm_byte)?;
@@ -1018,6 +1024,33 @@ pub unsafe fn run(opcode: i32) -> bool {
         },
 
         // shift group with an imm8 count (0xC1) or a count of one (0xD1)
+        // the byte forms of the same shifts: by an immediate, by one, and by cl
+        0xC0 | 0xD0 | 0xD2 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let (value, addr) = match read_rm_keep_addr(modrm_byte, 8) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let count = match opcode {
+                0xD0 => 1,
+                0xD2 => read_reg8(1 /* cl */),
+                _ => match read_imm8() {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                },
+            };
+            match shift_op(modrm_byte >> 3 & 7, value, count, 8) {
+                Some(result) => {
+                    let _ = write_rm_keep_addr(modrm_byte, addr, result, 8);
+                    true
+                },
+                None => false,
+            }
+        },
+
         0xC1 | 0xD1 => {
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,

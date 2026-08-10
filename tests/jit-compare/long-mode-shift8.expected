@@ -1,0 +1,11 @@
+; What the byte shifts in long-mode-shift8.asm are defined to leave behind.
+rbx = aaaaaaaaaaaaaa02     ; shl by one, and only the low byte changed
+r13 = 0000000000000001     ; with the bit that left the top in carry
+r12 = ffffffffffffff40     ; shr is logical, so a zero comes in over bit 7
+r14 = 0000000000000001     ; and bit 0 goes to carry
+rdx = 00000000000000c0     ; sar is arithmetic, so the same value keeps its sign
+rsi = 0000000000000020     ; by an immediate
+rdi = 0000000000000010     ; by cl
+r9  = 0000000000000002     ; a count of 33 is masked to one
+r10 = 0000000000000002     ; a memory operand, the other path through the read modify write
+r11 = 00000000000000ff     ; a shift by zero changes nothing
