@@ -1,0 +1,4 @@
+; What long-mode-rdrand.asm leaves behind. The random values themselves are not reproducible, so
+; only the shape of the result is checked.
+r8  = 0000000000000000     ; the 32-bit form zero extended, leaving nothing in the top half
+r9  = 0000000000000001     ; cf set to report success, and no other arithmetic flag set

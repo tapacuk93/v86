@@ -2182,6 +2182,36 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         },
 
         // bswap
+        // 0f c7 /6 reg is rdrand, which windows uses to seed itself once cpuid advertises it.
+        // rex.w makes it 64 bits wide, which needs two draws from the 32-bit source.
+        //
+        // The other member of this group, /1 mem, is cmpxchg8b - and rex.w turns that one into
+        // cmpxchg16b, a different instruction rather than a wider form of the same one. Neither is
+        // implemented here, so both fall through and trap by name.
+        0xC7 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let group = modrm_byte >> 3 & 7;
+            if group != 6 || modrm_byte < 0xC0 {
+                dbg_log!("Unimplemented: 64-bit 0fc7 /{}", group);
+                return false;
+            }
+            let rand = if osize == 64 {
+                js::get_rand_int() as u32 as i64 | (js::get_rand_int() as u32 as i64) << 32
+            }
+            else {
+                js::get_rand_int() as u32 as i64
+            };
+            write_reg_sized((modrm_byte & 7) | rex_bit(REX_B), rand, osize);
+            // success is reported in cf, and the other arithmetic flags are cleared
+            *flags &= !FLAGS_ALL;
+            *flags |= 1;
+            *flags_changed = 0;
+            true
+        },
+
         0xC8..=0xCF => {
             let reg = (opcode & 7) | rex_bit(REX_B);
             let value = read_reg64(reg);
