@@ -813,6 +813,32 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // test al, imm8 and test rax/eax/ax, imm. test is and with the result thrown away, so only
+        // the flags survive; the wider form's immediate is sign extended like every other one here.
+        0xA8 => {
+            let imm = match read_imm8() {
+                Ok(v) => v as i64,
+                Err(()) => return true,
+            };
+            let dst = read_reg8(0) as i8 as i64;
+            set_flags64_logical((dst & imm) as i8 as i64);
+            true
+        },
+        0xA9 => {
+            let imm = match read_imm_osize(osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let dst = sized(read_reg64(EAX), osize);
+            if osize == 64 {
+                arith::logical64(dst & imm);
+            }
+            else {
+                set_flags64_logical(sized(dst & imm, osize));
+            }
+            true
+        },
+
         // adc and sbb at the wider sizes, which share the group1 encodings
         0x11 | 0x19 | 0x13 | 0x1B => {
             let modrm_byte = match read_imm8() {

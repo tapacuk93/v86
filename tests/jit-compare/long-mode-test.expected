@@ -1,0 +1,10 @@
+; The flags each case in long-mode-test.asm is defined to set, materialised by setcc.
+r8  = 0000000000000000     ; 0xff & 0x80 is not zero
+r9  = 0000000000000001     ; and bit 7 of it is set, so the byte result is negative
+r10 = 0000000000000001     ; 0xff & 0x00 is zero
+r11 = 0000000000000000     ; rax & -1 is rax, which is not zero
+r12 = 0000000000000000     ; and bit 63 of it is clear
+r13 = 0000000000000001     ; with bit 63 set the 64-bit result is negative
+r14 = 0000000000000001     ; at 32 bits the sign is bit 31
+r15 = 0000000000000000     ; and the result is not zero
+rbx = 00000000ffffffff     ; test discards its result, so the accumulator is unchanged
