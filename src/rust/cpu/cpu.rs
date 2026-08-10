@@ -534,12 +534,12 @@ pub unsafe fn call_interrupt_vector_64(
     error_code: Option<i32>,
 ) {
     if interrupt_nr << 4 | 15 > *idtr_size {
-        dbg_log!(
-            "#gp interrupt {:x} beyond idt limit {:x}",
+        dbg_assert!(
+            false,
+            "Unimplemented: #gp for interrupt {:x} beyond idt limit {:x}",
             interrupt_nr,
             *idtr_size
         );
-        dbg_assert!(false, "Unimplemented: #gp for interrupt beyond idt limit");
         return;
     }
 
@@ -554,17 +554,21 @@ pub unsafe fn call_interrupt_vector_64(
     if gate_type != InterruptDescriptor64::INTERRUPT_GATE
         && gate_type != InterruptDescriptor64::TRAP_GATE
     {
-        dbg_log!(
-            "#gp invalid gate type {:x} in long mode idt, vector {:x}",
+        dbg_assert!(
+            false,
+            "Unimplemented: #gp for invalid long mode gate type {:x}, vector {:x} at idt {:x}",
             gate_type,
-            interrupt_nr
+            interrupt_nr,
+            *idtr_offset
         );
-        dbg_assert!(false, "Unimplemented: invalid long mode gate");
         return;
     }
     if !descriptor.is_present() {
-        dbg_log!("#np interrupt {:x} gate not present", interrupt_nr);
-        dbg_assert!(false, "Unimplemented: #np for long mode gate");
+        dbg_assert!(
+            false,
+            "Unimplemented: #np for long mode gate, vector {:x}",
+            interrupt_nr
+        );
         return;
     }
     if is_software_int && descriptor.dpl() < *cpl {
@@ -574,19 +578,24 @@ pub unsafe fn call_interrupt_vector_64(
     }
 
     if descriptor.ist() != 0 {
-        dbg_log!("Unimplemented: interrupt stack table");
-        dbg_assert!(false, "Unimplemented: ist");
+        dbg_assert!(
+            false,
+            "Unimplemented: interrupt stack table, ist {} on vector {:x}",
+            descriptor.ist(),
+            interrupt_nr
+        );
         return;
     }
 
     let selector = descriptor.selector() as i32;
     if selector & 3 != *cpl as i32 {
-        dbg_log!(
-            "Unimplemented: long mode interrupt with a privilege change, cs {:x} cpl {}",
+        dbg_assert!(
+            false,
+            "Unimplemented: long mode interrupt {:x} with a privilege change, cs {:x} cpl {}",
+            interrupt_nr,
             selector,
             *cpl
         );
-        dbg_assert!(false, "Unimplemented: long mode privilege change");
         return;
     }
 

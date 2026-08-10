@@ -1,0 +1,6 @@
+; What long-mode-efer.asm leaves behind: writing efer back with the read-only lma bit set is
+; accepted and ignored, and the writable bit alongside it takes effect.
+r8  = 0000000000000500     ; efer on entry to long mode: lme|lma
+r9  = 0000000000000000     ; nothing in the top half
+r10 = 0000000000000d00     ; after the write back: lme|lma|nxe
+r11 = 0000000000000000

@@ -1216,7 +1216,10 @@ pub unsafe fn instr_0F30() {
         },
         IA32_EFER => {
             dbg_assert!(high == 0, "Unsupported: efer high bits");
-            if low & !EFER_WRITABLE_MASK != 0 {
+            // lma is read only rather than reserved: writing it is ignored, not faulted. Software
+            // that reads efer and writes it back unmodified - which is how windows sets nxe - would
+            // otherwise fault on the bit the cpu itself set.
+            if low & !(EFER_WRITABLE_MASK | EFER_LMA) != 0 {
                 dbg_log!("#gp writing reserved/unsupported efer bits: {:x}", low);
                 trigger_gp(0);
                 return;
