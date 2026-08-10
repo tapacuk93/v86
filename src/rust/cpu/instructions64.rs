@@ -2187,6 +2187,67 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             };
             let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
             let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+
+            // A memory operand here is a whole 128-bit access, and windows makes them through
+            // kernel addresses - so they are done at full address width rather than delegated to
+            // the 32-bit implementations, which take an i32 address. Only the operand differs
+            // between these; what each does with it is still the existing implementation, reached
+            // through the variants that take a value rather than an address.
+            //
+            // movss and movsd are deliberately absent: an f3 or f2 prefix on 0x10/0x11 makes the
+            // access 32 or 64 bits wide rather than 128, so they are not part of this shape.
+            if modrm_byte < 0xC0 && !(has_f3 && (opcode == 0x10 || opcode == 0x11)) {
+                let addr = match resolve_modrm64(modrm_byte) {
+                    Ok(a) => a,
+                    Err(()) => return true,
+                };
+                let r = modrm_reg(modrm_byte);
+                let is_store = opcode == 0x11 || opcode == 0x29 || opcode == 0x7F;
+                if is_store {
+                    let _ = safe_write128_64(addr, read_xmm128s(r));
+                    return true;
+                }
+                let source = match safe_read128s_64(addr) {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                };
+                return match (opcode, has_66, has_f3) {
+                    (0x10, false, false) | (0x10, true, false) => {
+                        i0f::instr_0F10(source, r);
+                        true
+                    },
+                    (0x28, false, false) | (0x28, true, false) => {
+                        i0f::instr_0F28(source, r);
+                        true
+                    },
+                    (0x57, false, false) => {
+                        i0f::instr_0F57(source, r);
+                        true
+                    },
+                    (0x6F, true, false) => {
+                        i0f::instr_660F6F(source, r);
+                        true
+                    },
+                    (0x6F, false, true) => {
+                        i0f::instr_F30F6F(source, r);
+                        true
+                    },
+                    (0xEF, true, false) => {
+                        i0f::instr_660FEF(source, r);
+                        true
+                    },
+                    _ => {
+                        dbg_log!(
+                            "Unimplemented 64-bit sse load {:02x} 66={} f3={}",
+                            opcode,
+                            has_66,
+                            has_f3
+                        );
+                        false
+                    },
+                };
+            }
+
             if has_f3 {
                 return match opcode {
                     0x10 => sse_delegate(modrm_byte, i0f::instr_F30F10_reg, i0f::instr_F30F10_mem),

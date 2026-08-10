@@ -62,6 +62,20 @@ long_mode:
     mov rsi, 0x8000
     mov r11d, [rsi]             ; -> 0xdeadbeef, the first page left as it was
 
+    ; a 128-bit sse access through the high address, which is the shape windows zeroes memory
+    ; with. This is a separate matter from the walk above: the operand is resolved at full width
+    ; but the access itself has to be too, and delegating it to a 32-bit implementation would
+    ; truncate the address back down.
+    mov rdx, 0x0123456789abcdef
+    movq xmm0, rdx
+    movlhps xmm0, xmm0
+    movups [rbx], xmm0          ; store sixteen bytes through the high address
+    mov rsi, 0x8000
+    mov r12, [rsi]              ; -> 0123456789abcdef, seen through the identity mapping
+    mov r13, [rsi + 8]          ; -> 0123456789abcdef, the half movlhps filled
+    movups xmm1, [rbx]          ; and load it back through the high address
+    movq r14, xmm1              ; -> 0123456789abcdef
+
     hlt
 
 %include "long-mode-epilogue.inc"

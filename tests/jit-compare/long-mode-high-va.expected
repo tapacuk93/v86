@@ -3,3 +3,6 @@ r8  = 00000000deadbeef     ; written through the high address, read through the 
 r9  = 00000000deadbeef     ; and read back through the high address itself
 r10 = 00000000600d600d     ; a second page under the same pml4 entry
 r11 = 00000000deadbeef     ; with the first left as it was
+r12 = 0123456789abcdef     ; a 128-bit sse store through the high address, low half
+r13 = 0123456789abcdef     ; and its high half
+r14 = 0123456789abcdef     ; loaded back through the high address again

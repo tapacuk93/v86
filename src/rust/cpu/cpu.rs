@@ -4612,6 +4612,17 @@ pub unsafe fn safe_read64s_64(addr: i64) -> OrPageFault<u64> {
     }
 }
 
+pub unsafe fn safe_read128s_64(addr: i64) -> OrPageFault<reg128> {
+    if addr & 0xFFF > 0x1000 - 16 {
+        Ok(reg128 {
+            u64: [safe_read64s_64(addr)?, safe_read64s_64(addr + 8)?],
+        })
+    }
+    else {
+        Ok(memory::read128(translate_address_read64(addr)?))
+    }
+}
+
 pub unsafe fn writable_or_pagefault64(addr: i64, size: i32) -> OrPageFault<()> {
     dbg_assert!(size < 0x1000);
     dbg_assert!(size > 0);
