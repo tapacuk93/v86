@@ -1108,8 +1108,11 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Err(()) => return true,
             };
             let reg = modrm_reg(modrm_byte);
-            let rm = match read_rm8(modrm_byte) {
-                Ok(v) => v as i8 as i64,
+            // The address is kept from the read rather than resolved a second time for the write.
+            // Resolving twice re-reads the sib byte and displacement from the instruction stream,
+            // which consumes them twice and leaves decoding to carry on mid-instruction.
+            let (rm, addr) = match read_rm_keep_addr(modrm_byte, 8) {
+                Ok((v, a)) => (v as i8 as i64, a),
                 Err(()) => return true,
             };
             let r = read_reg8(reg) as i8 as i64;
@@ -1122,7 +1125,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                         write_reg8(reg, result as i32);
                     }
                     else {
-                        let _ = write_rm8(modrm_byte, result as i32);
+                        let _ = write_rm_keep_addr(modrm_byte, addr, result, 8);
                     }
                 },
                 None => {},
@@ -1136,9 +1139,11 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            // one byte of immediate follows, which rip relative addressing has to count past
-            let dst = match read_rm8_imm(modrm_byte, 1) {
-                Ok(v) => v as i8 as i64,
+            // one byte of immediate follows, which rip relative addressing has to count past. The
+            // address is kept from the read for the same reason as the group above: resolving it
+            // again would consume the sib byte and displacement a second time.
+            let (dst, addr) = match read_rm_keep_addr_imm(modrm_byte, 8, 1) {
+                Ok((v, a)) => (v as i8 as i64, a),
                 Err(()) => return true,
             };
             let imm = match read_imm8s() {
@@ -1147,7 +1152,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             };
             match group1_op(modrm_byte >> 3 & 7, dst, imm, 8) {
                 Some(result) => {
-                    let _ = write_rm8(modrm_byte, result as i32);
+                    let _ = write_rm_keep_addr(modrm_byte, addr, result, 8);
                 },
                 None => {},
             }

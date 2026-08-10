@@ -1,0 +1,6 @@
+; What long-mode-byte-alu-modrm.asm leaves behind. The two counters are the point: they are only 3
+; if the instruction after the read-modify-write began where it should have.
+r8  = 0000000000000003     ; the inc after the register form decoded at the right offset
+r9  = 0000000000000069     ; 55 xor 3c
+r10 = 0000000000000003     ; and after the immediate form
+r11 = 0000000000000066     ; 69 xor 0f
