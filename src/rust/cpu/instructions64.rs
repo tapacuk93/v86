@@ -2730,6 +2730,58 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
+        // bsf and bsr: the index of the lowest or highest set bit. A source of zero has no index,
+        // so zf says so and the destination keeps whatever it already held - which is why nothing
+        // is written in that case rather than a zero being written.
+        0xBC | 0xBD => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            let src = match read_rm(modrm_byte, osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let src = if osize == 64 {
+                src as u64
+            }
+            else {
+                (src as u64) & ((1u64 << osize) - 1)
+            };
+
+            *flags_changed = FLAGS_ALL & !FLAG_ZERO & !FLAG_CARRY;
+            *flags &= !FLAG_CARRY;
+            *last_op_size = match osize {
+                64 => OPSIZE_64,
+                32 => OPSIZE_32,
+                _ => OPSIZE_16,
+            };
+
+            let result = if src == 0 {
+                *flags |= FLAG_ZERO;
+                0
+            }
+            else {
+                *flags &= !FLAG_ZERO;
+                let index = if opcode == 0xBC {
+                    src.trailing_zeros()
+                }
+                else {
+                    63 - src.leading_zeros()
+                } as i64;
+                write_reg_sized(reg, index, osize);
+                index
+            };
+            if osize == 64 {
+                *last_result_64 = result;
+            }
+            else {
+                *last_result = result as i32;
+            }
+            true
+        },
+
         // cpuid
         0xA2 => {
             crate::cpu::instructions_0f::instr_0FA2();

@@ -1,0 +1,7 @@
+; What long-mode-bsf.asm leaves behind. Measured on a real x86-64 under rosetta, see
+; long-mode-bsf-oracle.c.
+r8  = 0000000000000008     ; bsf, the lowest set bit
+r9  = 000000000000002c     ; bsr, the highest
+r10 = 1234567812345678     ; a zero source leaves the destination alone
+r11 = 0000000000000040     ; and sets zf to say so
+r12 = 0000000000000013     ; the 32-bit form zero extends into the full register
