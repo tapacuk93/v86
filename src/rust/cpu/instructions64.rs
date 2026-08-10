@@ -1718,6 +1718,42 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
+        // xadd r/m, r: the destination takes the sum and the register takes what the destination
+        // held, which is how an interlocked increment learns the value it incremented past.
+        //
+        // The flags are an ordinary add's, so group1_op does it. Order matters when both operands
+        // name the same register: the destination is written last, so the sum wins, which is what
+        // hardware does.
+        0xC0 | 0xC1 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let size = if opcode == 0xC0 { 8 } else { osize };
+            let reg = modrm_reg(modrm_byte);
+            let (dst_raw, addr) = match read_rm_keep_addr(modrm_byte, size) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let dst = if size == 8 { dst_raw as i8 as i64 } else { sized(dst_raw, size) };
+            let src = if size == 8 { read_reg8(reg) as i8 as i64 } else { sized(read_reg64(reg), size) };
+            let sum = match group1_op(0, dst, src, size) {
+                Some(v) => v,
+                // add always produces a value; this cannot happen, and guessing would be worse
+                None => return false,
+            };
+            if size == 8 {
+                write_reg8(reg, dst_raw as i32);
+            }
+            else {
+                write_reg_sized(reg, dst_raw, size);
+            }
+            if write_rm_keep_addr(modrm_byte, addr, sum, size).is_err() {
+                return true;
+            }
+            true
+        },
+
         0xB6 | 0xB7 => {
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,

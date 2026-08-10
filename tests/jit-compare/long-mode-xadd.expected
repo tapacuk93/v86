@@ -1,0 +1,9 @@
+; Which operand ends up with what, for each case in long-mode-xadd.asm.
+rcx = 000000000000006b     ; 100 + 7, the sum, which goes to the destination
+rdx = 0000000000000064     ; and 100, what the destination held, which goes to the register
+rdi = 000000000000002a     ; 40 + 2 in memory
+r10 = 0000000000000028     ; and 40 back into the register
+r15 = 0000000000000001     ; -1 + 1 carries out, the flags being an ordinary add's
+r11 = 0000000000000000     ; and wraps to zero
+r13 = 000000000000000b     ; a 32-bit destination is written whole, clearing a dirty top half
+r14 = 0000000000000005     ; and so is the register half
