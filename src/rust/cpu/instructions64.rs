@@ -2346,7 +2346,7 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             }
         },
 
-        0x10 | 0x11 | 0x28 | 0x29 | 0x57 | 0x6F | 0x7F | 0xEF => {
+        0x10 | 0x11 | 0x28 | 0x29 | 0x2B | 0x57 | 0x6F | 0x7F | 0xEF => {
             use crate::cpu::instructions_0f as i0f;
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
@@ -2369,7 +2369,11 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     Err(()) => return true,
                 };
                 let r = modrm_reg(modrm_byte);
-                let is_store = opcode == 0x11 || opcode == 0x29 || opcode == 0x7F;
+                // 0x2b is movntps/movntpd, a store whose non-temporal hint has nothing to act on
+                // here; it exists only in the memory form, so its register form falls through to
+                // be reported rather than being silently accepted.
+                let is_store =
+                    opcode == 0x11 || opcode == 0x29 || opcode == 0x2B || opcode == 0x7F;
                 if is_store {
                     let _ = safe_write128_64(addr, read_xmm128s(r));
                     return true;

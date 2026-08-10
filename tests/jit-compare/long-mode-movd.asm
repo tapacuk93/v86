@@ -38,6 +38,15 @@ long_mode:
     movd eax, xmm0
     mov r12, rax                ; -> 0000000089abcdef
 
+    ; movntps, a store whose non-temporal hint has nothing to act on here, so it is an ordinary
+    ; 128-bit store that happens to exist only in the memory form
+    movq xmm3, rdx
+    movlhps xmm3, xmm3
+    mov rdi, 0x7100
+    movntps [rdi], xmm3
+    mov r13, [rdi]              ; -> 0123456789abcdef
+    mov r14, [rdi + 8]          ; -> 0123456789abcdef
+
     hlt
 
 %include "long-mode-epilogue.inc"

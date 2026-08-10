@@ -5,3 +5,5 @@ r9  = 00000000deadbeef     ; movd cleared the rest of xmm1 rather than merging i
 r10 = 0123456789abcdef     ; the stored low half
 r11 = 0123456789abcdef     ; and the high half movlhps filled
 r12 = 0000000089abcdef     ; movd out writes 32 bits, so the top half of rax is cleared
+r13 = 0123456789abcdef     ; movntps stored the low half like any other 128-bit store
+r14 = 0123456789abcdef     ; and the high half
