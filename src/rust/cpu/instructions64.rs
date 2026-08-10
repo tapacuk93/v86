@@ -990,6 +990,32 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // movsxd r64, r/m32, which is what widens a 32-bit value to an index or a pointer and so
+        // appears wherever 64-bit code touches an array. The opcode is only this in 64-bit mode;
+        // below it, it is arpl.
+        //
+        // Only rex.w is implemented. Without it the destination is 32 bits, which makes this a
+        // plain mov with a sign extension that is then discarded, and the 16-bit form truncates
+        // the source as well; both are documented as discouraged and neither has been asked for,
+        // so they trap by name rather than being guessed at.
+        0x63 => {
+            if osize != 64 {
+                dbg_log!("Unimplemented: movsxd with operand size {}", osize);
+                return false;
+            }
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            match read_rm(modrm_byte, 32) {
+                // read_rm zero extends at 32, so the sign extension is done here
+                Ok(v) => write_reg64(reg, v as u32 as i32 as i64),
+                Err(()) => {},
+            }
+            true
+        },
+
         // push r
         0x50..=0x57 => {
             let reg = (opcode & 7) | rex_bit(REX_B);
