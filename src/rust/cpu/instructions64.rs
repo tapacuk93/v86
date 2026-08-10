@@ -813,6 +813,45 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // pushfq and popfq, which bracket anything that has to leave the interrupt flag as it found
+        // it, so system code reaches for them constantly. The image is eight bytes because the
+        // stack is always that wide here; the upper half of rflags is reserved and reads as zero.
+        //
+        // The 32-bit paths guard against a vm86 monitor trap first. That cannot happen in long
+        // mode, where the vm flag cannot be set, so the check is not repeated.
+        //
+        // Like push and pop, these default to the full width in long mode and rex.w says nothing:
+        // only a 0x66 prefix narrows them, so the check is against 16 rather than for 64. The
+        // 16-bit form moves the stack pointer by two rather than eight, which needs its own narrow
+        // push and pop, and nothing has asked for it.
+        0x9C => {
+            if osize == 16 {
+                dbg_log!("Unimplemented: pushfw");
+                return false;
+            }
+            // vm and rf are cleared in the image that reaches the stack
+            let _ = push64((get_eflags() & 0xFCFFFF) as i64);
+            true
+        },
+        0x9D => {
+            if osize == 16 {
+                dbg_log!("Unimplemented: popfw");
+                return false;
+            }
+            let old_flags = *flags;
+            match pop64() {
+                // only the low half is defined; update_eflags applies the writable subset of it,
+                // including the privilege rules for iopl and the interrupt flag
+                Ok(v) => update_eflags(v as i32),
+                Err(()) => return true,
+            }
+            // enabling interrupts here has to let anything already pending through
+            if old_flags & FLAG_INTERRUPT == 0 && *flags & FLAG_INTERRUPT != 0 {
+                handle_irqs();
+            }
+            true
+        },
+
         // imul r, r/m, imm: the three operand form, which is how a signed index gets scaled by a
         // structure size, so it sits next to movsxd in array addressing. 0x69 takes the immediate
         // at the operand size, 0x6B a sign extended byte.

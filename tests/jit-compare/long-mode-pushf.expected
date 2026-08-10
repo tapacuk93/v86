@@ -1,0 +1,7 @@
+; What pushfq and popfq are defined to do for each case in long-mode-pushf.asm.
+rbx = 0000000000000008     ; pushfq moves the stack pointer by eight, not four
+r12 = 0000000000000000     ; zero was genuinely cleared between the push and the pop
+r13 = 0000000000000001     ; and came back from the stack
+r14 = 0000000000000000     ; a clear flag stays clear across the round trip
+r15 = 0000000000000002     ; bit 1 of rflags always reads as one
+rsi = 0000000000008000     ; the stack pointer ends where it started
