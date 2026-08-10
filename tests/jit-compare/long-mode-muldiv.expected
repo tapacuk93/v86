@@ -1,0 +1,14 @@
+; What long-mode-muldiv.asm leaves behind. Not derived: measured on a real x86-64 by running the
+; same arithmetic under rosetta, see long-mode-muldiv-oracle.c.
+r8  = 7eb689f4ea447d62     ; 1: mul rbx, the low half
+r9  = 00fd5bdeeeb2a01d     ;    and the high half
+r10 = 0000000000000801     ;    cf and of both set, since the high half carries something
+r11 = c962fc962fc96330     ; 2: imul rbx by a negative operand
+r12 = ffffffffffffffff     ;    the high half is only the sign the low half already implies
+r13 = 0000000000000000     ;    so neither cf nor of is set
+r14 = 00000000ffffedcc     ; 3: mul ebx zero extends the low half
+r15 = 0000000000001233     ;    and the high half too, clearing the ones both started with
+rbp = 5555555555555555     ; 4: div rbx, 2^64 over 3
+rsi = 0000000000000001     ;    remainder
+rdi = fffffffffffffff2     ; 5: idiv rbx, -100 over 7 truncating toward zero: -14
+rcx = fffffffffffffffe     ;    remainder -2, taking the sign of the dividend

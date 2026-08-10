@@ -514,6 +514,130 @@ unsafe fn rotate_op(op: i32, value: i64, count: i32, osize: i32) -> Option<i64> 
     Some(sized(result as i64, osize))
 }
 
+/// The widening multiplies and the divides of the shift group's neighbour, ops 4 to 7 of 0xf6/0xf7,
+/// with `src` the sign extended r/m operand and `w` the operand width in bits.
+///
+/// All four work on an operand twice the width of the one encoded. At byte width that pair is just
+/// ax; at every other width it is dx:ax. Doing the arithmetic in 128 bits covers the widest case
+/// without splitting it, since a 64-bit multiply produces 128 bits and a 64-bit divide consumes
+/// them.
+///
+/// The multiplies report in cf and of whether the upper half carries anything the lower half does
+/// not already say, and leave sf, zf and pf derived from the lower half. The divides define no
+/// flags at all, and raise #de rather than truncating when the quotient does not fit.
+unsafe fn mul_div_op(op: i32, src: i64, w: i32) {
+    let bits = w as u32;
+    let low_mask: u64 = if w == 64 { !0 } else { (1u64 << bits) - 1 };
+    let unsigned = |v: i64| (v as u64) & low_mask;
+
+    // ax and dx at this width, zero extended and sign extended respectively
+    let ax_u = unsigned(read_reg64(EAX));
+    let dx_u = unsigned(read_reg64(EDX));
+    let ax_s = sized(read_reg64(EAX), w);
+    let dx_s = sized(read_reg64(EDX), w);
+
+    // the byte forms keep both halves in ax, so writing back is one 16-bit write rather than two
+    let write_pair = |low: u64, high: u64| {
+        if w == 8 {
+            write_reg_sized(EAX, (low & 0xFF | (high & 0xFF) << 8) as i64, 16);
+        }
+        else {
+            write_reg_sized(EAX, low as i64, w);
+            write_reg_sized(EDX, high as i64, w);
+        }
+    };
+
+    match op {
+        // mul and imul
+        4 | 5 => {
+            let (low, high) = if op == 4 {
+                let r = ax_u as u128 * unsigned(src) as u128;
+                (r as u64 & low_mask, (r >> bits) as u64 & low_mask)
+            }
+            else {
+                let r = ax_s as i128 * src as i128;
+                (r as u64 & low_mask, (r >> bits) as u64 & low_mask)
+            };
+            write_pair(low, high);
+
+            // mul overflows when the upper half holds anything; imul when it holds anything other
+            // than the sign the lower half already implies
+            let overflow = if op == 4 {
+                high != 0
+            }
+            else {
+                sized(high as i64, w) != sized(low as i64, w) >> (bits - 1)
+            };
+
+            let low_s = sized(low as i64, w);
+            if w == 64 {
+                *last_result_64 = low_s;
+            }
+            else {
+                *last_result = low_s as i32;
+            }
+            *last_op_size = match w {
+                64 => OPSIZE_64,
+                32 => OPSIZE_32,
+                16 => OPSIZE_16,
+                _ => OPSIZE_8,
+            };
+            *flags_changed = FLAGS_ALL & !FLAG_CARRY & !FLAG_OVERFLOW;
+            *flags = *flags & !FLAG_CARRY & !FLAG_OVERFLOW
+                | if overflow { FLAG_CARRY | FLAG_OVERFLOW } else { 0 };
+        },
+        // div
+        6 => {
+            let divisor = unsigned(src) as u128;
+            if divisor == 0 {
+                trigger_de();
+                return;
+            }
+            let dividend = if w == 8 {
+                read_reg64(EAX) as u64 as u128 & 0xFFFF
+            }
+            else {
+                (dx_u as u128) << bits | ax_u as u128
+            };
+            let quotient = dividend / divisor;
+            if quotient > low_mask as u128 {
+                trigger_de();
+                return;
+            }
+            write_pair(quotient as u64, (dividend % divisor) as u64);
+        },
+        // idiv
+        _ => {
+            let divisor = src as i128;
+            if divisor == 0 {
+                trigger_de();
+                return;
+            }
+            let dividend = if w == 8 {
+                read_reg64(EAX) as i16 as i128
+            }
+            else {
+                (dx_s as i128) << bits | ax_u as i128
+            };
+            // the quotient can be one step outside i128 when dividing the most negative value by
+            // -1, so the division itself has to be checked before its result is range checked
+            let quotient = match dividend.checked_div(divisor) {
+                Some(q) => q,
+                None => {
+                    trigger_de();
+                    return;
+                },
+            };
+            let limit = 1i128 << (bits - 1);
+            if quotient < -limit || quotient >= limit {
+                trigger_de();
+                return;
+            }
+            write_pair(quotient as u64, (dividend % divisor) as u64);
+        },
+    }
+}
+
 unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i64> {
     let count = raw_count & if osize == 64 { 63 } else { 31 };
     if count == 0 {
@@ -1564,9 +1688,11 @@ pub unsafe fn run(opcode: i32) -> bool {
                     let _ =
                         write_rm_keep_addr(modrm_byte, addr, r, if byte_op { 8 } else { osize });
                 },
+                // mul, imul, div and idiv. The double width operand is split across dx and ax at
+                // every width but byte, where the whole of it fits in ax alone - so the byte forms
+                // touch one register where the others touch two.
                 _ => {
-                    dbg_log!("Unimplemented: 64-bit group3 op {}", op);
-                    return false;
+                    mul_div_op(op, dst, if byte_op { 8 } else { osize });
                 },
             }
             true
