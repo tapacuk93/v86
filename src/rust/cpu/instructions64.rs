@@ -2337,6 +2337,23 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 Err(()) => return true,
             };
             let group = modrm_byte >> 3 & 7;
+
+            // /7 with a memory operand is invlpg, which drops one page rather than loading a
+            // descriptor table. Its operand is a virtual address like any other, so it has to be
+            // taken at full width - windows invalidates kernel pages while it builds the address
+            // space it is about to run in.
+            if group == 7 && modrm_byte < 0xC0 {
+                if 0 != *cpl {
+                    trigger_gp(0);
+                    return true;
+                }
+                match resolve_modrm64(modrm_byte) {
+                    Ok(addr) => invlpg64(addr),
+                    Err(()) => {},
+                }
+                return true;
+            }
+
             if modrm_byte >= 0xC0 || !matches!(group, 0 | 1 | 2 | 3) {
                 dbg_log!("Unimplemented: 64-bit 0f01 /{}", group);
                 return false;

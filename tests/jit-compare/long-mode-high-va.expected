@@ -6,3 +6,4 @@ r11 = 00000000deadbeef     ; with the first left as it was
 r12 = 0123456789abcdef     ; a 128-bit sse store through the high address, low half
 r13 = 0123456789abcdef     ; and its high half
 r14 = 0123456789abcdef     ; loaded back through the high address again
+r15 = 0000000005eaf00d     ; invlpg dropped exactly the high page, so the remap took effect

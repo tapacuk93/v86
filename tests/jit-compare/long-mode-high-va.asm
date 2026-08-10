@@ -76,6 +76,16 @@ long_mode:
     movups xmm1, [rbx]          ; and load it back through the high address
     movq r14, xmm1              ; -> 0123456789abcdef
 
+    ; invlpg on a high address. Everything above reloads cr3, which drops the whole tlb and so
+    ; would hide a slot being computed wrongly; this drops exactly one page and then depends on
+    ; the new mapping being the one that gets used.
+    mov rdi, 0x15000
+    mov dword [rdi], 0xa000 | 3     ; pt[0] -> a third physical page
+    invlpg [rbx]
+    mov dword [rbx], 0x05eaf00d
+    mov rsi, 0xa000
+    mov r15d, [rsi]                 ; -> 05eaf00d, through the page invlpg let us see
+
     hlt
 
 %include "long-mode-epilogue.inc"
