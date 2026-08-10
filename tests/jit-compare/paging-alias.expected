@@ -1,0 +1,5 @@
+; What paging-alias.asm leaves behind once the tlb has filled, aliased and been invalidated.
+rbx = 0000000011111111     ; the write through virtual 0x400000, seen through the identity mapping
+rcx = 0000000022222222     ; after the remap, the write landed on the new physical page
+rdx = 0000000011111111     ; and left the old one alone, so invlpg was honoured
+rsi = 0000000022222222     ; reading back through the virtual address agrees with the new page
