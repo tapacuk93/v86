@@ -1,0 +1,10 @@
+; What long-mode-packed.asm leaves behind. Measured on a real x86-64 under rosetta, see
+; long-mode-packed-oracle.c.
+r8  = 0000000700000001     ; paddd, the low dword wrapping without carrying into the next
+r9  = 0000000500000003     ; and the high half, whose other operand was zero
+r10 = 0000000000000000     ; pcmpgtd found nothing greater in either lane
+r11 = 0000000000000000
+r12 = 000f000f000f000f     ; pand
+r13 = 0000000000000000
+r14 = 2222222244444444     ; paddd again, this time reading its source from memory
+r15 = 2222222244444444

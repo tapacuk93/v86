@@ -645,6 +645,102 @@ unsafe fn mul_div_op(op: i32, src: i64, w: i32) {
     }
 }
 
+/// The 66-prefixed sse operations that take a 128-bit source and act on an xmm register.
+///
+/// Their register and memory forms differ only in where the source comes from: the existing
+/// implementations are literally the same function fed either from a register or from a 128-bit
+/// read. Serving both from the value taking form here, rather than delegating, is what lets the
+/// memory operand be a full 64-bit address.
+///
+/// Only shapes that read exactly 128 bits are in this table. The stores, the ones carrying an
+/// immediate, and the ones moving to or from a general purpose register have different shapes and
+/// are handled on their own.
+fn sse_66_source_op(opcode: i32) -> Option<unsafe fn(reg128, i32)> {
+    use crate::cpu::instructions_0f as i;
+    Some(match opcode {
+        0x10 => i::instr_660F10,
+        0x15 => i::instr_660F15,
+        0x28 => i::instr_660F28,
+        0x2C => i::instr_660F2C,
+        0x2D => i::instr_660F2D,
+        0x51 => i::instr_660F51,
+        0x54 => i::instr_660F54,
+        0x55 => i::instr_660F55,
+        0x56 => i::instr_660F56,
+        0x57 => i::instr_660F57,
+        0x58 => i::instr_660F58,
+        0x59 => i::instr_660F59,
+        0x5A => i::instr_660F5A,
+        0x5B => i::instr_660F5B,
+        0x5C => i::instr_660F5C,
+        0x5D => i::instr_660F5D,
+        0x5E => i::instr_660F5E,
+        0x5F => i::instr_660F5F,
+        0x60 => i::instr_660F60,
+        0x61 => i::instr_660F61,
+        0x62 => i::instr_660F62,
+        0x63 => i::instr_660F63,
+        0x64 => i::instr_660F64,
+        0x65 => i::instr_660F65,
+        0x66 => i::instr_660F66,
+        0x67 => i::instr_660F67,
+        0x68 => i::instr_660F68,
+        0x69 => i::instr_660F69,
+        0x6A => i::instr_660F6A,
+        0x6B => i::instr_660F6B,
+        0x6C => i::instr_660F6C,
+        0x6D => i::instr_660F6D,
+        0x6F => i::instr_660F6F,
+        0x74 => i::instr_660F74,
+        0x75 => i::instr_660F75,
+        0x76 => i::instr_660F76,
+        0x7C => i::instr_660F7C,
+        0x7D => i::instr_660F7D,
+        0xD1 => i::instr_660FD1,
+        0xD2 => i::instr_660FD2,
+        0xD3 => i::instr_660FD3,
+        0xD4 => i::instr_660FD4,
+        0xD5 => i::instr_660FD5,
+        0xD8 => i::instr_660FD8,
+        0xD9 => i::instr_660FD9,
+        0xDA => i::instr_660FDA,
+        0xDB => i::instr_660FDB,
+        0xDC => i::instr_660FDC,
+        0xDD => i::instr_660FDD,
+        0xDE => i::instr_660FDE,
+        0xDF => i::instr_660FDF,
+        0xE0 => i::instr_660FE0,
+        0xE1 => i::instr_660FE1,
+        0xE2 => i::instr_660FE2,
+        0xE3 => i::instr_660FE3,
+        0xE4 => i::instr_660FE4,
+        0xE5 => i::instr_660FE5,
+        0xE6 => i::instr_660FE6,
+        0xE8 => i::instr_660FE8,
+        0xE9 => i::instr_660FE9,
+        0xEA => i::instr_660FEA,
+        0xEB => i::instr_660FEB,
+        0xEC => i::instr_660FEC,
+        0xED => i::instr_660FED,
+        0xEE => i::instr_660FEE,
+        0xEF => i::instr_660FEF,
+        0xF1 => i::instr_660FF1,
+        0xF2 => i::instr_660FF2,
+        0xF3 => i::instr_660FF3,
+        0xF4 => i::instr_660FF4,
+        0xF5 => i::instr_660FF5,
+        0xF6 => i::instr_660FF6,
+        0xF8 => i::instr_660FF8,
+        0xF9 => i::instr_660FF9,
+        0xFA => i::instr_660FFA,
+        0xFB => i::instr_660FFB,
+        0xFC => i::instr_660FFC,
+        0xFD => i::instr_660FFD,
+        0xFE => i::instr_660FFE,
+        _ => return None,
+    })
+}
+
 /// The string instructions - movs, cmps, stos, lods and scas - in 64-bit mode.
 ///
 /// Much simpler than their 16- and 32-bit forms, which is why they are here rather than delegated:
@@ -2346,7 +2442,13 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             }
         },
 
-        0x10 | 0x11 | 0x28 | 0x29 | 0x2B | 0x57 | 0x6F | 0x7F | 0xEF => {
+        0x10 | 0x11 | 0x15 | 0x28 | 0x29 | 0x2B | 0x2C | 0x2D | 0x51 | 0x54 | 0x55 | 0x56 |
+        0x57 | 0x58 | 0x59 | 0x5A | 0x5B | 0x5C | 0x5D | 0x5E | 0x5F | 0x60 | 0x61 | 0x62 |
+        0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6A | 0x6B | 0x6C | 0x6D | 0x6F |
+        0x74 | 0x75 | 0x76 | 0x7C | 0x7D | 0x7F | 0xD1 | 0xD2 | 0xD3 | 0xD4 | 0xD5 | 0xD8 |
+        0xD9 | 0xDA | 0xDB | 0xDC | 0xDD | 0xDE | 0xDF | 0xE0 | 0xE1 | 0xE2 | 0xE3 | 0xE4 |
+        0xE5 | 0xE6 | 0xE8 | 0xE9 | 0xEA | 0xEB | 0xEC | 0xED | 0xEE | 0xEF | 0xF1 | 0xF2 |
+        0xF3 | 0xF4 | 0xF5 | 0xF6 | 0xF8 | 0xF9 | 0xFA | 0xFB | 0xFC | 0xFD | 0xFE => {
             use crate::cpu::instructions_0f as i0f;
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
@@ -2354,6 +2456,29 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             };
             let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
             let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+
+            // The uniform family first; what falls past this is the stores, the f3 forms and the
+            // ones without a 0x66, which are each their own shape.
+            if has_66 && !has_f3 {
+                if let Some(op) = sse_66_source_op(opcode) {
+                    let r = modrm_reg(modrm_byte);
+                    let source = if modrm_byte >= 0xC0 {
+                        read_xmm128s(modrm_rm(modrm_byte))
+                    }
+                    else {
+                        let addr = match resolve_modrm64(modrm_byte) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read128s_64(addr) {
+                            Ok(v) => v,
+                            Err(()) => return true,
+                        }
+                    };
+                    op(source, r);
+                    return true;
+                }
+            }
 
             // A memory operand here is a whole 128-bit access, and windows makes them through
             // kernel addresses - so they are done at full address width rather than delegated to
