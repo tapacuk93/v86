@@ -1,0 +1,9 @@
+; What movsxd is defined to produce for each case in long-mode-movsxd.asm. Only the registers the
+; fixture is about are listed; rax and the addressing scratch are left out.
+rbx = ffffffffffffffed     ; 0xffffffed sign extended
+rcx = 000000007ffffffe     ; positive, so the top half stays clear
+rdx = ffffffff80000000     ; exactly the sign bit
+rsi = 0000000000000001     ; held -1 first: the destination is written whole, not merged
+r9  = fffffffffffffff0     ; from memory, through an extended base
+r10 = 0000000000000042     ; extended destination and base together
+r11 = 0000000000000001     ; a copy of the source, which must be unchanged

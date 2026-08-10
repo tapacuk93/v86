@@ -373,10 +373,18 @@ devices-test: build/v86-debug.wasm
 # Differential test of the code generator: runs a flat binary interpreted and compiled and
 # compares registers. Needs a profiler build, since that is what reports whether anything actually
 # ran compiled, and long mode built in, since most of the fixtures enter it.
+#
+# regcheck.js then checks the values themselves against a .expected file, where a fixture has one.
+# The differential run cannot do that on its own: in 64-bit mode the jit does not participate, so
+# both halves interpret the same code and agree whatever it computes.
 jit-compare-test:
 	$(MAKE) debug-with-profiler-and-long-mode
 	$(MAKE) -C tests/jit-compare
-	for f in tests/jit-compare/build/*.bin; do echo "== $$f"; ./tests/jit-compare/run.js $$f || exit 1; done
+	for f in tests/jit-compare/build/*.bin; do \
+		echo "== $$f"; \
+		./tests/jit-compare/run.js $$f || exit 1; \
+		./tests/jit-compare/regcheck.js $$f || exit 1; \
+	done
 
 rust-test: $(RUST_FILES)
 	env RUSTFLAGS="-D warnings" RUST_BACKTRACE=full RUST_TEST_THREADS=1 cargo test -- --nocapture
