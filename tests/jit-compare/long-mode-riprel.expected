@@ -1,0 +1,10 @@
+; rip relative addressing must count from past the instruction's immediate. Each untouched slot
+; here is the one a displacement that fell short would have hit instead.
+rax = 0000000011111111     ; slot_a, untouched by the write to slot_b
+rbx = 00000000aaaaaaaa     ; slot_b, the intended destination of the imm32 store
+rcx = 0000000033333333     ; slot_c, read before the later increment
+rdx = 0000000000000055     ; byte_a, untouched by the write to byte_b
+rsi = 0000000000000099     ; byte_b, the intended destination of the imm8 store
+rdi = 123456789abcdef0     ; a rip relative load with no immediate at all
+r9  = 0000000033333334     ; add dword [rip+disp],1 landed on slot_c
+r10 = 00000000aaaaaaaa     ; and not one byte short, which would have carried into slot_b

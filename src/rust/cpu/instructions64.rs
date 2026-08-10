@@ -70,7 +70,14 @@ unsafe fn modrm_rm(modrm_byte: i32) -> i32 { (modrm_byte & 7) | rex_bit(REX_B) }
 /// registers, rm=101 with mod=00 is rip relative rather than an absolute disp32, and there is no
 /// 16-bit form.
 unsafe fn resolve_modrm64(modrm_byte: i32) -> OrPageFault<i32> {
-    truncate_address(resolve_modrm64_address(modrm_byte)?)
+    resolve_modrm64_imm(modrm_byte, 0)
+}
+
+/// As resolve_modrm64, for an instruction that carries `imm_bytes` of immediate after the modrm.
+/// Only rip relative addressing cares: it counts from the end of the whole instruction, and the
+/// immediate has not been read yet at the point the modrm is resolved.
+unsafe fn resolve_modrm64_imm(modrm_byte: i32, imm_bytes: i32) -> OrPageFault<i32> {
+    truncate_address(resolve_modrm64_address_imm(modrm_byte, imm_bytes)?)
 }
 
 /// The effective address a modrm byte describes, without checking whether v86 can reach it.
@@ -79,6 +86,10 @@ unsafe fn resolve_modrm64(modrm_byte: i32) -> OrPageFault<i32> {
 /// neither the 4 GiB limit nor a fault applies to it. Everything that does access memory goes
 /// through resolve_modrm64, which checks.
 unsafe fn resolve_modrm64_address(modrm_byte: i32) -> OrPageFault<i64> {
+    resolve_modrm64_address_imm(modrm_byte, 0)
+}
+
+unsafe fn resolve_modrm64_address_imm(modrm_byte: i32, imm_bytes: i32) -> OrPageFault<i64> {
     dbg_assert!(modrm_byte < 0xC0);
 
     let m = modrm_byte >> 6 & 3;
@@ -110,10 +121,12 @@ unsafe fn resolve_modrm64_address(modrm_byte: i32) -> OrPageFault<i64> {
         }
     }
     else if rm == 5 && m == 0 {
-        // rip relative: the displacement is added to the address of the next instruction, so it
-        // must be read before instruction_pointer has moved past any immediate that follows
+        // rip relative: the displacement counts from the address of the *next* instruction, which
+        // is past any immediate this one carries. The immediate has not been read yet here, so its
+        // length is passed in and added; getting this wrong puts every rip relative access that
+        // has an immediate imm_bytes too low.
         let disp = read_imm32s()? as i64;
-        *instruction_pointer as i64 + disp
+        *instruction_pointer as i64 + imm_bytes as i64 + disp
     }
     else {
         read_reg64(modrm_rm(modrm_byte))
@@ -146,6 +159,10 @@ unsafe fn pop64() -> OrPageFault<i64> {
 
 /// Read the r/m operand at the current operand size
 unsafe fn read_rm(modrm_byte: i32, osize: i32) -> OrPageFault<i64> {
+    read_rm_imm(modrm_byte, osize, 0)
+}
+
+unsafe fn read_rm_imm(modrm_byte: i32, osize: i32, imm_bytes: i32) -> OrPageFault<i64> {
     if modrm_byte >= 0xC0 {
         let v = read_reg64(modrm_rm(modrm_byte));
         Ok(match osize {
@@ -155,7 +172,7 @@ unsafe fn read_rm(modrm_byte: i32, osize: i32) -> OrPageFault<i64> {
         })
     }
     else {
-        let addr = resolve_modrm64(modrm_byte)?;
+        let addr = resolve_modrm64_imm(modrm_byte, imm_bytes)?;
         Ok(match osize {
             16 => safe_read16(addr)? as i64,
             32 => safe_read32s(addr)? as u32 as i64,
@@ -176,12 +193,16 @@ unsafe fn write_reg_sized(reg: i32, value: i64, osize: i32) {
 }
 
 unsafe fn write_rm(modrm_byte: i32, value: i64, osize: i32) -> OrPageFault<()> {
+    write_rm_imm(modrm_byte, value, osize, 0)
+}
+
+unsafe fn write_rm_imm(modrm_byte: i32, value: i64, osize: i32, imm_bytes: i32) -> OrPageFault<()> {
     if modrm_byte >= 0xC0 {
         write_reg_sized(modrm_rm(modrm_byte), value, osize);
         Ok(())
     }
     else {
-        let addr = resolve_modrm64(modrm_byte)?;
+        let addr = resolve_modrm64_imm(modrm_byte, imm_bytes)?;
         match osize {
             16 => safe_write16(addr, value as i32 & 0xFFFF),
             32 => safe_write32(addr, value as i32),
@@ -327,11 +348,15 @@ fn narrow(value: i64, byte_op: bool, osize: i32) -> i64 {
 }
 
 unsafe fn read_rm8(modrm_byte: i32) -> OrPageFault<i32> {
+    read_rm8_imm(modrm_byte, 0)
+}
+
+unsafe fn read_rm8_imm(modrm_byte: i32, imm_bytes: i32) -> OrPageFault<i32> {
     if modrm_byte >= 0xC0 {
         Ok(read_reg8(modrm_rm(modrm_byte)))
     }
     else {
-        safe_read8(resolve_modrm64(modrm_byte)?)
+        safe_read8(resolve_modrm64_imm(modrm_byte, imm_bytes)?)
     }
 }
 
@@ -554,6 +579,14 @@ unsafe fn adc_sbb(dst: i64, src: i64, osize: i32, is_sub: bool) -> i64 {
 /// bytes as a displacement and leaves the decoder pointing into the middle of the next
 /// instruction. `None` means the operand was a register.
 unsafe fn read_rm_keep_addr(modrm_byte: i32, osize: i32) -> OrPageFault<(i64, Option<i32>)> {
+    read_rm_keep_addr_imm(modrm_byte, osize, 0)
+}
+
+unsafe fn read_rm_keep_addr_imm(
+    modrm_byte: i32,
+    osize: i32,
+    imm_bytes: i32,
+) -> OrPageFault<(i64, Option<i32>)> {
     if modrm_byte >= 0xC0 {
         // read_rm has no byte case and would hand back the whole register, so the byte operand is
         // read here. The memory path below does handle 8, so only this side was missing it.
@@ -561,12 +594,12 @@ unsafe fn read_rm_keep_addr(modrm_byte: i32, osize: i32) -> OrPageFault<(i64, Op
             read_reg8(modrm_rm(modrm_byte)) as i64
         }
         else {
-            read_rm(modrm_byte, osize)?
+            read_rm_imm(modrm_byte, osize, imm_bytes)?
         };
         Ok((value, None))
     }
     else {
-        let addr = resolve_modrm64(modrm_byte)?;
+        let addr = resolve_modrm64_imm(modrm_byte, imm_bytes)?;
         let value = match osize {
             8 => safe_read8(addr)? as i64,
             16 => safe_read16(addr)? as i64,
@@ -789,7 +822,8 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            let dst = match read_rm8(modrm_byte) {
+            // one byte of immediate follows, which rip relative addressing has to count past
+            let dst = match read_rm8_imm(modrm_byte, 1) {
                 Ok(v) => v as i8 as i64,
                 Err(()) => return true,
             };
@@ -900,7 +934,17 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Err(()) => return true,
             };
             let reg = modrm_reg(modrm_byte);
-            let src = match read_rm(modrm_byte, osize) {
+            // 0x6b takes a byte of immediate, 0x69 one at the operand size
+            let imm_bytes = if opcode == 0x6B {
+                1
+            }
+            else if osize == 16 {
+                2
+            }
+            else {
+                4
+            };
+            let src = match read_rm_imm(modrm_byte, osize, imm_bytes) {
                 Ok(v) => sized(v, osize),
                 Err(()) => return true,
             };
@@ -999,7 +1043,17 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            let (raw, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+            // 0x83 takes a byte of immediate, 0x81 one at the operand size
+            let imm_bytes = if opcode == 0x83 {
+                1
+            }
+            else if osize == 16 {
+                2
+            }
+            else {
+                4
+            };
+            let (raw, addr) = match read_rm_keep_addr_imm(modrm_byte, osize, imm_bytes) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
@@ -1030,7 +1084,8 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            let (value, addr) = match read_rm_keep_addr(modrm_byte, 8) {
+            let imm_bytes = if opcode == 0xC0 { 1 } else { 0 };
+            let (value, addr) = match read_rm_keep_addr_imm(modrm_byte, 8, imm_bytes) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
@@ -1056,7 +1111,9 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+            // 0xc1 takes a byte of immediate, 0xd1 shifts by one and takes none
+            let imm_bytes = if opcode == 0xC1 { 1 } else { 0 };
+            let (value, addr) = match read_rm_keep_addr_imm(modrm_byte, osize, imm_bytes) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
@@ -1378,9 +1435,23 @@ pub unsafe fn run(opcode: i32) -> bool {
             let byte_op = opcode == 0xF6;
             let op = modrm_byte >> 3 & 7;
 
+            // only the test forms carry an immediate; not, neg, mul and the divides do not, so
+            // rip relative addressing counts past one only for those
+            let imm_bytes = if op > 1 {
+                0
+            }
+            else if byte_op {
+                1
+            }
+            else if osize == 16 {
+                2
+            }
+            else {
+                4
+            };
             let (dst, addr) = {
                 let width = if byte_op { 8 } else { osize };
-                match read_rm_keep_addr(modrm_byte, width) {
+                match read_rm_keep_addr_imm(modrm_byte, width, imm_bytes) {
                     Ok((v, a)) => (sized(v, width), a),
                     Err(()) => return true,
                 }
@@ -1425,6 +1496,8 @@ pub unsafe fn run(opcode: i32) -> bool {
         },
 
         // mov r/m, imm32 sign extended (0xC7) or imm8 (0xC6)
+        // mov r/m, imm. The immediate follows the modrm, so a rip relative destination has to
+        // count past it.
         0xC6 | 0xC7 => {
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
@@ -1436,11 +1509,22 @@ pub unsafe fn run(opcode: i32) -> bool {
             // The displacement belongs to the modrm encoding and comes before the immediate, so
             // the address has to be resolved first. Resolving it afterwards reads the immediate's
             // bytes as the displacement, and resolving it twice consumes them twice.
+            // 0xc6 carries a byte immediate, 0xc7 one at the operand size (four bytes unless the
+            // operand size is 16), and rip relative addressing counts from past it.
+            let imm_bytes = if opcode == 0xC6 {
+                1
+            }
+            else if osize == 16 {
+                2
+            }
+            else {
+                4
+            };
             let addr = if modrm_byte >= 0xC0 {
                 None
             }
             else {
-                match resolve_modrm64(modrm_byte) {
+                match resolve_modrm64_imm(modrm_byte, imm_bytes) {
                     Ok(a) => Some(a),
                     Err(()) => return true,
                 }
@@ -1974,7 +2058,8 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 dbg_log!("Unimplemented: 64-bit 0fba /{}", op);
                 return false;
             }
-            let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+            // a byte of immediate follows the modrm
+            let (value, addr) = match read_rm_keep_addr_imm(modrm_byte, osize, 1) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
