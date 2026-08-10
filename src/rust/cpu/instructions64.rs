@@ -813,6 +813,36 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // xchg r/m, r. A read modify write, so the modrm is resolved once and the address kept:
+        // resolving it a second time to write back would consume the displacement twice and
+        // desynchronise everything after it.
+        //
+        // A memory operand is locked implicitly, which matters on hardware and not here, where
+        // nothing can observe the halfway state.
+        0x86 | 0x87 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let size = if opcode == 0x86 { 8 } else { osize };
+            let reg = modrm_reg(modrm_byte);
+            let (dst, addr) = match read_rm_keep_addr(modrm_byte, size) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let src = if size == 8 { read_reg8(reg) as i64 } else { sized(read_reg64(reg), size) };
+            if write_rm_keep_addr(modrm_byte, addr, src, size).is_err() {
+                return true;
+            }
+            if size == 8 {
+                write_reg8(reg, dst as i32);
+            }
+            else {
+                write_reg_sized(reg, dst, size);
+            }
+            true
+        },
+
         // pushfq and popfq, which bracket anything that has to leave the interrupt flag as it found
         // it, so system code reaches for them constantly. The image is eight bytes because the
         // stack is always that wide here; the upper half of rflags is reserved and reads as zero.
@@ -1229,8 +1259,22 @@ pub unsafe fn run(opcode: i32) -> bool {
             run_0f(opcode2, osize)
         },
 
-        // nop
-        0x90 => true,
+        // xchg rax, r, whose 0x90 case is nop.
+        //
+        // 0x90 is only nop when it names rax twice, which needs rex.b clear: with it set the
+        // operand is r8 and the exchange is real. Treating the whole opcode as nop would silently
+        // drop that swap, which is why this is not simply `0x90 => true`.
+        0x90..=0x97 => {
+            let reg = (opcode & 7) | rex_bit(REX_B);
+            if reg == 0 {
+                // xchg rax, rax, which is the canonical nop and does not narrow the register
+                return true;
+            }
+            let tmp = sized(read_reg64(EAX), osize);
+            write_reg_sized(EAX, sized(read_reg64(reg), osize), osize);
+            write_reg_sized(reg, tmp, osize);
+            true
+        },
 
         // hlt
         0xF4 => {

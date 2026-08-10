@@ -1,0 +1,9 @@
+; What each swap in long-mode-xchg.asm is defined to leave behind.
+rax = 3333333344444444     ; xchg rax, rbx, which is the 0x90+r accumulator form
+rbx = 1111111122222222     ; and its other half
+rcx = deadbeefcafebabe     ; taken from memory
+rdx = 0123456789abcdef     ; and the old rcx put there: a second modrm resolve would have used a
+                           ; different displacement and this would be somewhere else
+r10 = 00000000ffffffff     ; a 32-bit swap writes the register whole, so the top half is cleared
+r12 = 00000000556677bb     ; the byte form, with rex making sil the low byte of rsi
+r14 = 00000000000000aa     ; and its other half
