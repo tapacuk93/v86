@@ -439,6 +439,81 @@ unsafe fn switch_seg_64_code(selector: i32) -> bool {
 /// Carry and overflow are worked out here and stored, the way the 32-bit shifts do it, while sign,
 /// zero and parity are left to be derived from the result. A count of zero changes no flags at all.
 /// The rotates share these opcodes but are not implemented, and are refused rather than guessed at.
+/// The rotates of the shift group, ops 0 to 3, with `count` already masked and known non-zero.
+///
+/// These only affect cf and of - sf, zf and pf keep whatever the last flag producing instruction
+/// left behind - so they clear just those two bits of `flags_changed` and never publish a
+/// `last_result`, which is what separates them from the shifts.
+///
+/// rol and ror take the count modulo the operand width. rcl and rcr rotate through cf, so their
+/// cycle is one bit longer than the operand; they are done in u128 to keep the odd width, where a
+/// count equal to the operand width would otherwise shift a u64 by its full width. of is
+/// architecturally defined only for a count of one, and is computed here the way the existing
+/// 8/16/32-bit rotates do it.
+unsafe fn rotate_op(op: i32, value: i64, count: i32, osize: i32) -> Option<i64> {
+    let width = osize as u32;
+    let unsigned = match osize {
+        8 => value as u8 as u64,
+        16 => value as u16 as u64,
+        32 => value as u32 as u64,
+        _ => value as u64,
+    };
+    let mask = if width == 64 { !0u64 } else { (1u64 << width) - 1 };
+
+    let (result, cf) = match op {
+        // rol and ror, a cycle exactly as wide as the operand. A count that is a whole number of
+        // turns leaves the value alone but still reports a bit in cf.
+        0 | 1 => {
+            let n = count as u32 % width;
+            if n == 0 {
+                let cf = if op == 0 { unsigned & 1 } else { unsigned >> (width - 1) & 1 };
+                (unsigned, cf)
+            }
+            else if op == 0 {
+                let r = (unsigned << n | unsigned >> (width - n)) & mask;
+                (r, r & 1)
+            }
+            else {
+                let r = (unsigned >> n | unsigned << (width - n)) & mask;
+                (r, r >> (width - 1) & 1)
+            }
+        },
+        // rcl and rcr, where cf sits above the operand as one extra bit of the cycle
+        _ => {
+            let cycle = width + 1;
+            let n = count as u32 % cycle;
+            if n == 0 {
+                return Some(value);
+            }
+            let v = unsigned as u128 | (getcf() as u128) << width;
+            let vmask = (1u128 << cycle) - 1;
+            let r = if op == 2 {
+                (v << n | v >> (cycle - n)) & vmask
+            }
+            else {
+                (v >> n | v << (cycle - n)) & vmask
+            };
+            ((r as u64) & mask, (r >> width) as u64 & 1)
+        },
+    };
+
+    // rotating left puts the bit that left the top into cf, so overflow compares the two; rotating
+    // right puts it into the top, so overflow compares the top two bits of the result
+    let of = if op == 0 || op == 2 {
+        (result >> (width - 1) & 1) ^ cf
+    }
+    else {
+        (result >> (width - 1) & 1) ^ (result >> (width - 2) & 1)
+    };
+
+    *flags_changed &= !FLAG_CARRY & !FLAG_OVERFLOW;
+    *flags = *flags & !FLAG_CARRY & !FLAG_OVERFLOW
+        | (cf as i32) & FLAG_CARRY
+        | ((of as i32) << 11) & FLAG_OVERFLOW;
+
+    Some(sized(result as i64, osize))
+}
+
 unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i64> {
     let count = raw_count & if osize == 64 { 63 } else { 31 };
     if count == 0 {
@@ -474,8 +549,10 @@ unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i6
             let cf = (signed >> (count - 1)) & 1;
             (result, cf, 0)
         },
+        // the rotates leave sf, zf and pf alone, so they cannot share the tail below
+        0..=3 => return rotate_op(op, value, count, osize),
         _ => {
-            dbg_log!("Unimplemented: 64-bit rotate, op {}", op);
+            dbg_log!("Unimplemented: 64-bit shift group op {}", op);
             return None;
         },
     };

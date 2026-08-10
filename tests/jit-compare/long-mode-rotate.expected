@@ -1,0 +1,19 @@
+; What long-mode-rotate.asm leaves behind. These are not derived: they are what a real x86-64
+; produces for the same sequence, captured by running it under rosetta.
+;
+; The flag slots hold cf|of only, since a rotate defines nothing else - except case G, which keeps
+; the whole arithmetic set to show that the flags a rotate does not define survive it.
+r8  = 468acf13579bde02     ; A: rol rax, 5
+r9  = 0000000000000000     ;    neither cf nor of
+r10 = 0123456789abcdef     ; B: ror rax, 4
+r11 = 0000000000000000
+r12 = 0000000000000000     ; C: rcl rax, 1 with cf clear, the top bit rotating out
+r13 = 0000000000000801     ;    cf takes the bit that left, and of marks the sign changing
+r14 = 0000000034567812     ; D: rol eax, 8 zero extended, discarding the top half
+r15 = 0000000000000000
+rbx = 048d159e26af37be     ; E: rcr rax, 63 with cf set
+rcx = 0000000000000000
+rdx = 0000000000000024     ; F: rol al, 9 is rol al, 1, and leaves the rest of rax alone
+rsi = 0000000000000000
+rdi = 0000000000000002     ; G: rol rax, 1 on 1
+rbp = 0000000000000044     ;    zf and pf still set from the xor, so the rotate published nothing
