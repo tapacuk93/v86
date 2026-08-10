@@ -1,0 +1,8 @@
+; What long-mode-psrldq.asm leaves behind. Measured on a real x86-64 under rosetta, see
+; long-mode-psrldq-oracle.c.
+r8  = 0123456789abcdef     ; psrldq brought the high half down
+r9  = 0000000000000000     ; and cleared the high half
+r10 = 89abcdef00000000     ; pslldq moved bytes up within the low half
+r11 = 89abcdef01234567     ; and carried the rest across into the high one
+r12 = 000123456789abcd     ; psrlq shifted the low half by bits
+r13 = 0000000000000000     ; leaving the high half, which was already zero, alone

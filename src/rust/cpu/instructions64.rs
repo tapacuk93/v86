@@ -2838,6 +2838,37 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
+        // the shift-by-immediate group on an xmm register: psrlq, psrldq, psllq and pslldq. Only
+        // the register form exists, and rex.b extends which xmm register it names.
+        0x73 => {
+            use crate::cpu::instructions_0f as i0f;
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let imm = match read_imm8() {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
+            let r = modrm_rm(modrm_byte);
+            if !has_66 || modrm_byte < 0xC0 {
+                dbg_log!("Unimplemented: 64-bit 0f73 66={} mod={}", has_66, modrm_byte >> 6);
+                return false;
+            }
+            match modrm_byte >> 3 & 7 {
+                2 => i0f::instr_660F73_2_reg(r, imm),
+                3 => i0f::instr_660F73_3_reg(r, imm),
+                6 => i0f::instr_660F73_6_reg(r, imm),
+                7 => i0f::instr_660F73_7_reg(r, imm),
+                group => {
+                    dbg_log!("Unimplemented: 64-bit 0f73 /{}", group);
+                    return false;
+                },
+            }
+            true
+        },
+
         // cpuid
         0xA2 => {
             crate::cpu::instructions_0f::instr_0FA2();
