@@ -2455,7 +2455,8 @@ pub unsafe fn do_page_walk(
             allow_user &= pml4_entry as i32 & PAGE_TABLE_USER_MASK != 0;
 
             let pdpt_entry_addr =
-                (pml4_entry as u32 & 0xFFFFF000) + ((((addr as u32) >> 30) & 0x1FF) << 3);
+                (pml4_entry as u32 & 0xFFFFF000)
+                    + (((((addr as u64) >> 30) & 0x1FF) as u32) << 3);
             let pdpt_entry = memory::read64s(pdpt_entry_addr);
 
             if pdpt_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0 {

@@ -14,20 +14,24 @@
 ; starts every run from a freshly zeroed 8 MiB and only the prologue has written anything.
 ;
 ; Tables, above the three the prologue builds at 0x10000..0x13000:
-;   0x13000  pdpt for the high address
+;   0x13000  pdpt for the high address, entry 5
 ;   0x14000  page directory
 ;   0x15000  page table, whose entries point at physical 0x8000 and 0x9000
 %include "long-mode.inc"
 
-HIGH_VA equ 0x10000000000       ; 1 TiB, so pml4 index 2 and every index below it zero
+; 517 GiB. The indices matter as much as the size: pml4 index 1 and pdpt index 5, where the pdpt
+; index is the one that would be lost by truncating the address to 32 bits - bits 38:30 of it live
+; partly above the boundary, and truncation turns index 5 into index 1. An address whose pdpt index
+; happens to survive truncation passes this test either way, so it would not be a test at all.
+HIGH_VA equ 0x8140000000
 
 BITS 64
 long_mode:
     mov rsp, 0x7000             ; clear of the pages this writes through
 
-    mov rdi, 0x10000 + 2 * 8    ; pml4[2] -> pdpt
+    mov rdi, 0x10000 + 1 * 8    ; pml4[1] -> pdpt
     mov dword [rdi], 0x13000 | 3
-    mov rdi, 0x13000            ; pdpt[0] -> pd
+    mov rdi, 0x13000 + 5 * 8    ; pdpt[5] -> pd
     mov dword [rdi], 0x14000 | 3
     mov rdi, 0x14000            ; pd[0] -> pt
     mov dword [rdi], 0x15000 | 3
