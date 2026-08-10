@@ -2115,6 +2115,70 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         },
 
         // sse instructions that behave the same in 64-bit mode
+        // movd/movq between an xmm register and a general purpose one or memory, and the movhps
+        // pair that sits beside them. Windows zeroes memory with this group: a value is put in an
+        // xmm register, spread across both halves, and stored sixteen bytes at a time.
+        //
+        // rex.w widens 0f 6e and 0f 7e from movd to movq, which the 32-bit implementations cannot
+        // express, so those two are done here rather than delegated. The operand width cannot come
+        // from osize either: the 0x66 here is the mandatory prefix selecting the sse form, not an
+        // operand size override, so without rex.w the operand is 32 bits rather than 16.
+        0x6E | 0x7E | 0x16 | 0x17 => {
+            use crate::cpu::instructions_0f as i0f;
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
+            let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+            let width = if 0 != *rex & REX_W { 64 } else { 32 };
+
+            match (opcode, has_66, has_f3) {
+                (0x16, false, false) => {
+                    sse_delegate(modrm_byte, i0f::instr_0F16_reg, i0f::instr_0F16_mem)
+                },
+                (0x16, true, false) => {
+                    sse_delegate(modrm_byte, i0f::instr_660F16_reg, i0f::instr_660F16_mem)
+                },
+                (0x17, false, false) => {
+                    sse_delegate(modrm_byte, i0f::instr_0F17_reg, i0f::instr_0F17_mem)
+                },
+                (0x17, true, false) => {
+                    sse_delegate(modrm_byte, i0f::instr_660F17_reg, i0f::instr_660F17_mem)
+                },
+                (0x7E, false, true) => {
+                    sse_delegate(modrm_byte, i0f::instr_F30F7E_reg, i0f::instr_F30F7E_mem)
+                },
+                // movd/movq xmm, r/m: the rest of the register is cleared either way
+                (0x6E, true, false) => {
+                    let r = modrm_reg(modrm_byte);
+                    let value = match read_rm(modrm_byte, width) {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    };
+                    let high = if width == 64 { (value >> 32) as i32 } else { 0 };
+                    write_xmm128(r, value as i32, high, 0, 0);
+                    true
+                },
+                // movd/movq r/m, xmm
+                (0x7E, true, false) => {
+                    let r = modrm_reg(modrm_byte);
+                    let value = read_xmm64s(r) as i64;
+                    let _ = write_rm(modrm_byte, value, width);
+                    true
+                },
+                _ => {
+                    dbg_log!(
+                        "Unimplemented 64-bit sse {:02x} 66={} f3={}",
+                        opcode,
+                        has_66,
+                        has_f3
+                    );
+                    false
+                },
+            }
+        },
+
         0x10 | 0x11 | 0x28 | 0x29 | 0x57 | 0x6F | 0x7F | 0xEF => {
             use crate::cpu::instructions_0f as i0f;
             let modrm_byte = match read_imm8() {
