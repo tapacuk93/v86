@@ -28,3 +28,6 @@ src/rust/gen/jit0f.rs
 bios/seabios
 bench-results
 .devcontainer/devcontainer-lock.json
+
+# screenshots written by local debugging harnesses
+screen-*.png
