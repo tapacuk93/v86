@@ -2,8 +2,12 @@ pub const LOG_PAGE_FAULTS: bool = false;
 
 pub const VMWARE_HYPERVISOR_PORT: bool = true;
 
-/// Groundwork for ia-32e mode. Long mode entry and 4-level paging exist, but the decoder, register
-/// file and jit are still 32-bit only, so no 64-bit code can actually execute yet. Keep this off
-/// until they follow, otherwise guests will see the cpuid long mode bit and try to boot a 64-bit
-/// kernel.
-pub const ENABLE_LONG_MODE: bool = false;
+/// ia-32e mode. Long mode entry, 4-level paging, the 64-bit register file and a hand written
+/// 64-bit decoder exist, but only the subset of the instruction set that guests have asked for so
+/// far, and the jit stays out of 64-bit code entirely. Anything missing traps by name rather than
+/// running the wrong thing, so a guest that reaches an unimplemented instruction says so.
+///
+/// Off by default because enabling it sets the cpuid long mode bit, and a guest that sees it will
+/// commit to a 64-bit kernel it cannot yet finish booting — a working 32-bit boot would turn into
+/// a failing 64-bit one. Build with `--features long_mode` to work on it.
+pub const ENABLE_LONG_MODE: bool = cfg!(feature = "long_mode");

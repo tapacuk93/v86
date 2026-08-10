@@ -236,6 +236,19 @@ with-profiler: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
 	cargo rustc --release --features profiler $(CARGO_FLAGS)
 	cp build/wasm32-unknown-unknown/release/v86.wasm build/v86.wasm || true
 
+# Long mode is off in the default build, since advertising it commits a guest to a 64-bit kernel
+# that cannot finish booting yet. These build it in, for working on 64-bit support and for the
+# fixtures under tests/jit-compare that enter long mode and would otherwise #gp on wrmsr to efer.
+debug-with-long-mode: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
+	mkdir -p build/
+	cargo rustc --features long_mode $(CARGO_FLAGS)
+	cp build/wasm32-unknown-unknown/debug/v86.wasm build/v86-debug.wasm || true
+
+debug-with-profiler-and-long-mode: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
+	mkdir -p build/
+	cargo rustc --features profiler,long_mode $(CARGO_FLAGS)
+	cp build/wasm32-unknown-unknown/debug/v86.wasm build/v86-debug.wasm || true
+
 watch:
 	cargo watch -x 'rustc $(CARGO_FLAGS)' -s 'cp build/wasm32-unknown-unknown/debug/v86.wasm build/v86-debug.wasm'
 
@@ -359,11 +372,11 @@ devices-test: build/v86-debug.wasm
 
 # Differential test of the code generator: runs a flat binary interpreted and compiled and
 # compares registers. Needs a profiler build, since that is what reports whether anything actually
-# ran compiled.
+# ran compiled, and long mode built in, since most of the fixtures enter it.
 jit-compare-test:
-	$(MAKE) debug-with-profiler
+	$(MAKE) debug-with-profiler-and-long-mode
 	$(MAKE) -C tests/jit-compare
-	./tests/jit-compare/run.js tests/jit-compare/build/packed-sse.bin
+	for f in tests/jit-compare/build/*.bin; do echo "== $$f"; ./tests/jit-compare/run.js $$f || exit 1; done
 
 rust-test: $(RUST_FILES)
 	env RUSTFLAGS="-D warnings" RUST_BACKTRACE=full RUST_TEST_THREADS=1 cargo test -- --nocapture
