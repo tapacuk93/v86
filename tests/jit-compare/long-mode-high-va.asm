@@ -1,0 +1,63 @@
+; A virtual address above 4 GiB, which is what windows runs its kernel at.
+;
+; v86 held virtual addresses in an i32 and indexed its tlb directly by page number, so only the low
+; 4 GiB of the canonical address space could be named at all - and the page walk assumed the pml4
+; index was therefore always zero. This fixture uses a non-zero pml4 index and an address that does
+; not fit in 32 bits, so it exercises both.
+;
+; The high address is mapped onto a physical page the prologue's identity mapping also covers, so
+; the same page can be reached two ways and the two views must agree.
+;
+; Table addresses are loaded into a register rather than written as absolute displacements: in
+; 64-bit mode a bare [0x1234] is ambiguous between rip relative and absolute, and nasm resolves it
+; with a warning rather than an error. The tables themselves need no zeroing, since the harness
+; starts every run from a freshly zeroed 8 MiB and only the prologue has written anything.
+;
+; Tables, above the three the prologue builds at 0x10000..0x13000:
+;   0x13000  pdpt for the high address
+;   0x14000  page directory
+;   0x15000  page table, whose entries point at physical 0x8000 and 0x9000
+%include "long-mode.inc"
+
+HIGH_VA equ 0x10000000000       ; 1 TiB, so pml4 index 2 and every index below it zero
+
+BITS 64
+long_mode:
+    mov rsp, 0x7000             ; clear of the pages this writes through
+
+    mov rdi, 0x10000 + 2 * 8    ; pml4[2] -> pdpt
+    mov dword [rdi], 0x13000 | 3
+    mov rdi, 0x13000            ; pdpt[0] -> pd
+    mov dword [rdi], 0x14000 | 3
+    mov rdi, 0x14000            ; pd[0] -> pt
+    mov dword [rdi], 0x15000 | 3
+    mov rdi, 0x15000            ; pt[0] -> physical 0x8000
+    mov dword [rdi], 0x8000 | 3
+
+    ; the tables were built after paging was already on, so drop whatever the tlb cached
+    mov rax, cr3
+    mov cr3, rax
+
+    ; write through the high address, read back through the identity mapping
+    mov rbx, HIGH_VA
+    mov dword [rbx], 0xdeadbeef
+    mov rsi, 0x8000
+    mov r8d, [rsi]              ; -> 0xdeadbeef, the same page seen low
+    mov r9d, [rbx]              ; -> 0xdeadbeef, read back through the high address
+
+    ; a second page under the same pml4 entry, to show the walk is not a one-off
+    mov rdi, 0x15008            ; pt[1] -> physical 0x9000
+    mov dword [rdi], 0x9000 | 3
+    mov rax, cr3
+    mov cr3, rax
+
+    mov rcx, HIGH_VA + 0x1000
+    mov dword [rcx], 0x600d600d
+    mov rsi, 0x9000
+    mov r10d, [rsi]             ; -> 0x600d600d
+    mov rsi, 0x8000
+    mov r11d, [rsi]             ; -> 0xdeadbeef, the first page left as it was
+
+    hlt
+
+%include "long-mode-epilogue.inc"

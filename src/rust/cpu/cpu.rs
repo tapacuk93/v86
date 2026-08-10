@@ -346,8 +346,63 @@ pub struct Code {
     pub state_table: [u16; 0x1000],
 }
 
-pub static mut tlb_data: [i32; 0x100000] = [0; 0x100000];
-pub static mut tlb_code: [Option<ptr::NonNull<Code>>; 0x100000] = [None; 0x100000];
+/// Slots reserved for virtual addresses below 4 GiB, indexed directly by page number.
+///
+/// That mapping is injective, so for this half of the tlb the index *is* a perfect hash: no two
+/// addresses collide and no tag is needed to tell which one a slot holds. Hashing it instead would
+/// be strictly worse - it would introduce collisions where there are none, and cost the jit's
+/// inlined lookup an extra load and compare on the hottest path in the emulator.
+pub const TLB_LOW_SLOTS: usize = 0x100000;
+
+/// Slots shared by virtual addresses at or above 4 GiB, which only long mode can name.
+///
+/// 2^36 pages fold onto these, so unlike the half above they do need a tag to say which page a
+/// slot currently holds. They are direct mapped, one way: a miss replaces whatever was there,
+/// which is all the existing eviction story (`valid_tlb_entries` filling up) already assumes.
+pub const TLB_HIGH_SLOTS: usize = 0x2000;
+
+pub const TLB_SLOTS: usize = TLB_LOW_SLOTS + TLB_HIGH_SLOTS;
+
+pub static mut tlb_data: [i32; TLB_SLOTS] = [0; TLB_SLOTS];
+
+/// The page number each high slot currently holds, meaningful only where `tlb_data` says valid.
+pub static mut tlb_high_tags: [i64; TLB_HIGH_SLOTS] = [0; TLB_HIGH_SLOTS];
+
+/// Compiled code, per virtual page. Only the low half has any, since the jit does not compile
+/// 64-bit code and so never sees an address that lands in a high slot.
+pub static mut tlb_code: [Option<ptr::NonNull<Code>>; TLB_LOW_SLOTS] = [None; TLB_LOW_SLOTS];
+
+/// Which slot of `tlb_data` an address uses.
+///
+/// Below 4 GiB this is the page number itself, so the jit's inlined `tlb_data[addr >> 12]` remains
+/// exactly right and needs no tag check. Above it, the page number is folded into the high region.
+#[inline(always)]
+pub fn tlb_slot(address: i64) -> usize {
+    let page = (address as u64) >> 12;
+    if page < TLB_LOW_SLOTS as u64 {
+        page as usize
+    }
+    else {
+        let folded = page ^ page >> 13 ^ page >> 26;
+        TLB_LOW_SLOTS + (folded as usize & (TLB_HIGH_SLOTS - 1))
+    }
+}
+
+/// The entry for an address, or 0 if the slot holds a different page and so has to be walked.
+///
+/// Returning 0 rather than a separate miss signal keeps the callers' existing shape: they already
+/// treat an entry without TLB_VALID as a miss, and 0 has no bits set.
+#[inline(always)]
+pub unsafe fn tlb_entry_of(address: i64) -> i32 {
+    let slot = tlb_slot(address);
+    if slot >= TLB_LOW_SLOTS {
+        let page = ((address as u64) >> 12) as i64;
+        if tlb_high_tags[slot - TLB_LOW_SLOTS] != page {
+            return 0;
+        }
+    }
+    tlb_data[slot]
+}
 
 pub static mut valid_tlb_entries: [i32; 10000] = [0; 10000];
 pub static mut valid_tlb_entries_count: i32 = 0;
@@ -2192,10 +2247,11 @@ pub unsafe fn translate_address_write(address: i32) -> OrPageFault<u32> {
     translate_address(address, true, *cpl == 3, false, false, true)
 }
 pub unsafe fn translate_address_write_jit(address: i32, wasm_table_index: u16) -> OrPageFault<u32> {
+    // compiled code only ever runs with 32-bit addresses, so this one stays narrow
     let mut entry = tlb_data[(address as u32 >> 12) as usize];
     let user = *cpl == 3;
     if entry & (TLB_VALID | if user { TLB_NO_USER } else { 0 } | TLB_READONLY) != TLB_VALID {
-        entry = do_page_walk(address, true, user, false, true, true)?.get();
+        entry = do_page_walk(address as u32 as i64, true, user, false, true, true)?.get();
     }
     let has_code = entry & TLB_HAS_CODE != 0;
     let phys_addr = (entry & !0xFFF ^ address) as u32 - memory::mem8 as u32;
@@ -2225,6 +2281,20 @@ pub unsafe fn translate_address_system_write(address: i32) -> OrPageFault<u32> {
     translate_address(address, true, false, false, false, true)
 }
 
+pub unsafe fn translate_address_read64(address: i64) -> OrPageFault<u32> {
+    translate_address64(address, false, *cpl == 3, false, false, true)
+}
+pub unsafe fn translate_address_write64(address: i64) -> OrPageFault<u32> {
+    translate_address64(address, true, *cpl == 3, false, false, true)
+}
+pub unsafe fn translate_address_exec64(address: i64) -> OrPageFault<u32> {
+    translate_address64(address, false, *cpl == 3, true, false, true)
+}
+
+/// Translate a virtual address that is known to fit in 32 bits.
+///
+/// Widening is a zero extension, not a sign extension: 0x80000000 is two gigabytes into the low
+/// half of the address space, not a negative address near the top of the canonical one.
 #[inline(always)]
 pub unsafe fn translate_address(
     address: i32,
@@ -2234,7 +2304,32 @@ pub unsafe fn translate_address(
     jit: bool,
     side_effects: bool,
 ) -> OrPageFault<u32> {
-    let mut entry = tlb_data[(address as u32 >> 12) as usize];
+    translate_address64(
+        address as u32 as i64,
+        for_writing,
+        user,
+        for_exec,
+        jit,
+        side_effects,
+    )
+}
+
+/// Translate a virtual address of any width.
+///
+/// The entry holds the physical page already offset by mem8 and xored with the low 32 bits of the
+/// virtual page, so recovering the physical address is one xor and one subtraction. Only the low
+/// 32 bits take part in that xor, which is what lets the same entry format serve addresses that do
+/// not fit in 32 bits: the bits above the page offset cancel either way.
+#[inline(always)]
+pub unsafe fn translate_address64(
+    address: i64,
+    for_writing: bool,
+    user: bool,
+    for_exec: bool,
+    jit: bool,
+    side_effects: bool,
+) -> OrPageFault<u32> {
+    let mut entry = tlb_entry_of(address);
     if entry
         & (TLB_VALID
             | if user { TLB_NO_USER } else { 0 }
@@ -2244,17 +2339,23 @@ pub unsafe fn translate_address(
     {
         entry = do_page_walk(address, for_writing, user, for_exec, jit, side_effects)?.get();
     }
-    Ok((entry & !0xFFF ^ address) as u32 - memory::mem8 as u32)
+    Ok((entry & !0xFFF ^ address as i32) as u32 - memory::mem8 as u32)
 }
 
 pub unsafe fn translate_address_write_and_can_skip_dirty(address: i32) -> OrPageFault<(u32, bool)> {
-    let mut entry = tlb_data[(address as u32 >> 12) as usize];
+    translate_address_write_and_can_skip_dirty64(address as u32 as i64)
+}
+
+pub unsafe fn translate_address_write_and_can_skip_dirty64(
+    address: i64,
+) -> OrPageFault<(u32, bool)> {
+    let mut entry = tlb_entry_of(address);
     let user = *cpl == 3;
     if entry & (TLB_VALID | if user { TLB_NO_USER } else { 0 } | TLB_READONLY) != TLB_VALID {
         entry = do_page_walk(address, true, user, false, false, true)?.get();
     }
     Ok((
-        (entry & !0xFFF ^ address) as u32 - memory::mem8 as u32,
+        (entry & !0xFFF ^ address as i32) as u32 - memory::mem8 as u32,
         entry & TLB_HAS_CODE == 0,
     ))
 }
@@ -2298,7 +2399,7 @@ unsafe fn check_paging_entry_nx(entry: i64, nxe: bool, allow_exec: &mut bool) ->
 
 #[cold]
 pub unsafe fn do_page_walk(
-    addr: i32,
+    addr: i64,
     for_writing: bool,
     user: bool,
     for_exec: bool,
@@ -2308,7 +2409,7 @@ pub unsafe fn do_page_walk(
     let global;
     let mut allow_user = true;
     let mut allow_exec = true;
-    let page = (addr as u32 >> 12) as i32;
+    let slot = tlb_slot(addr) as i32;
     let high;
 
     let cr0 = *cr;
@@ -2334,11 +2435,8 @@ pub unsafe fn do_page_walk(
         profiler::stat_increment(stat::TLB_MISS);
 
         let (page_dir_addr, page_dir_entry) = if long_mode {
-            // Addresses are 32-bit throughout v86, so only the low 4 GiB of the virtual address
-            // space is reachable and the pml4 index is always 0. Reaching the rest of the
-            // canonical address space needs a wider address type and a tlb that isn't directly
-            // indexed by page number.
-            let pml4_entry_addr = *cr.offset(3) as u32 & 0xFFFFF000;
+            let pml4_entry_addr = (*cr.offset(3) as u32 & 0xFFFFF000)
+                + (((((addr as u64) >> 39) & 0x1FF) as u32) << 3);
             let pml4_entry = memory::read64s(pml4_entry_addr);
 
             if pml4_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0 {
@@ -2532,7 +2630,7 @@ pub unsafe fn do_page_walk(
         }
     }
 
-    if side_effects && tlb_data[page as usize] == 0 {
+    if side_effects && tlb_data[slot as usize] == 0 {
         if valid_tlb_entries_count == VALID_TLB_ENTRY_MAX {
             profiler::stat_increment(stat::TLB_FULL);
             clear_tlb();
@@ -2543,7 +2641,7 @@ pub unsafe fn do_page_walk(
             }
         }
         dbg_assert!(valid_tlb_entries_count < VALID_TLB_ENTRY_MAX);
-        valid_tlb_entries[valid_tlb_entries_count as usize] = page;
+        valid_tlb_entries[valid_tlb_entries_count as usize] = slot;
         valid_tlb_entries_count += 1;
     // TODO: Check that there are no duplicates in valid_tlb_entries
     // XXX: There will probably be duplicates due to invlpg deleting
@@ -2552,7 +2650,7 @@ pub unsafe fn do_page_walk(
     else if side_effects && CHECK_TLB_INVARIANTS {
         let mut found = false;
         for i in 0..valid_tlb_entries_count {
-            if valid_tlb_entries[i as usize] == page {
+            if valid_tlb_entries[i as usize] == slot {
                 found = true;
                 break;
             }
@@ -2578,15 +2676,23 @@ pub unsafe fn do_page_walk(
         | if has_code { TLB_HAS_CODE } else { 0 }
         | if allow_exec { 0 } else { TLB_NO_EXEC };
 
-    let tlb_entry = (high + memory::mem8 as u32) as i32 ^ page << 12 | info_bits as i32;
+    // Only the low 32 bits of the virtual page take part in the xor. Everything above them
+    // cancels when the entry is used, so one entry format serves both halves of the tlb.
+    let tlb_entry =
+        (high + memory::mem8 as u32) as i32 ^ (addr as i32 & !0xFFF) | info_bits as i32;
 
-    dbg_assert!((high ^ (page as u32) << 12) & 0xFFF == 0);
+    dbg_assert!((high ^ (addr as u32 & 0xFFFFF000)) & 0xFFF == 0);
     if side_effects {
         // bake in the addition with memory::mem8 to save an instruction from the fast path
         // of memory accesses
-        tlb_data[page as usize] = tlb_entry;
-
-        jit::update_tlb_code(Page::page_of(addr as u32), Page::page_of(high));
+        tlb_data[slot as usize] = tlb_entry;
+        if slot as usize >= TLB_LOW_SLOTS {
+            tlb_high_tags[slot as usize - TLB_LOW_SLOTS] = ((addr as u64) >> 12) as i64;
+        }
+        else {
+            // compiled code is tracked per virtual page, and only the low half has any
+            jit::update_tlb_code(Page::page_of(addr as u32), Page::page_of(high));
+        }
     }
 
     Ok(if DEBUG {
@@ -2597,15 +2703,26 @@ pub unsafe fn do_page_walk(
     })
 }
 
+/// Drop whatever one slot holds. A high slot has a tag to invalidate and never has compiled code
+/// against it; a low slot is the other way round.
+pub unsafe fn clear_tlb_slot(slot: i32) {
+    if slot as usize >= TLB_LOW_SLOTS {
+        tlb_high_tags[slot as usize - TLB_LOW_SLOTS] = 0;
+    }
+    else {
+        clear_tlb_code(slot);
+    }
+    tlb_data[slot as usize] = 0;
+}
+
 #[no_mangle]
 pub unsafe fn full_clear_tlb() {
     profiler::stat_increment(stat::FULL_CLEAR_TLB);
     // clear tlb including global pages
     *last_virt_eip = -1;
     for i in 0..valid_tlb_entries_count {
-        let page = valid_tlb_entries[i as usize];
-        clear_tlb_code(page);
-        tlb_data[page as usize] = 0;
+        let slot = valid_tlb_entries[i as usize];
+        clear_tlb_slot(slot);
     }
     valid_tlb_entries_count = 0;
 
@@ -2624,16 +2741,15 @@ pub unsafe fn clear_tlb() {
     *last_virt_eip = -1;
     let mut global_page_offset = 0;
     for i in 0..valid_tlb_entries_count {
-        let page = valid_tlb_entries[i as usize];
-        let entry = tlb_data[page as usize];
+        let slot = valid_tlb_entries[i as usize];
+        let entry = tlb_data[slot as usize];
         if 0 != entry & TLB_GLOBAL {
             // reinsert at the front
-            valid_tlb_entries[global_page_offset as usize] = page;
+            valid_tlb_entries[global_page_offset as usize] = slot;
             global_page_offset += 1;
         }
         else {
-            clear_tlb_code(page);
-            tlb_data[page as usize] = 0;
+            clear_tlb_slot(slot);
         }
     }
     valid_tlb_entries_count = global_page_offset;
@@ -2722,7 +2838,7 @@ pub unsafe fn exit_jit() {
 ///
 /// Non-jit resets the instruction pointer and does the PF interrupt directly
 pub unsafe fn trigger_pagefault(
-    addr: i32,
+    addr: i64,
     present: bool,
     write: bool,
     user: bool,
@@ -2745,11 +2861,11 @@ pub unsafe fn trigger_pagefault(
         dbg_trace();
     }
     profiler::stat_increment(stat::PAGE_FAULT);
-    *cr.offset(2) = addr;
+    // cr is an array of i32, so a faulting address above 4 GiB reaches cr2 truncated. Reporting
+    // it in full needs the control registers widened too, which nothing yet reads back.
+    *cr.offset(2) = addr as i32;
     // invalidate tlb entry
-    let page = ((addr as u32) >> 12) as i32;
-    clear_tlb_code(page);
-    tlb_data[page as usize] = 0;
+    clear_tlb_slot(tlb_slot(addr) as i32);
     let error_code = (fetch as i32) << 4
         | (reserved as i32) << 3
         | (user as i32) << 2
@@ -2767,21 +2883,34 @@ pub unsafe fn trigger_pagefault(
     }
 }
 
+/// The low 20 bits of the virtual page a slot currently holds, which is what its entry was xored
+/// with. For the low half that is the slot itself; for the high half only the tag knows, since
+/// many pages fold onto each slot.
+fn tlb_slot_vpn_low(slot: i32) -> u32 {
+    if (slot as usize) < TLB_LOW_SLOTS {
+        slot as u32
+    }
+    else {
+        unsafe { tlb_high_tags[slot as usize - TLB_LOW_SLOTS] as u32 & 0xFFFFF }
+    }
+}
+
 pub fn tlb_set_has_code(physical_page: Page, has_code: bool) {
     for i in 0..unsafe { valid_tlb_entries_count } {
-        let page = unsafe { valid_tlb_entries[i as usize] };
-        let entry = unsafe { tlb_data[page as usize] };
+        let slot = unsafe { valid_tlb_entries[i as usize] };
+        let entry = unsafe { tlb_data[slot as usize] };
         if 0 != entry {
             let tlb_physical_page = Page::of_u32(
-                (entry as u32 >> 12 ^ page as u32) - (unsafe { memory::mem8 } as u32 >> 12),
+                (entry as u32 >> 12 ^ tlb_slot_vpn_low(slot))
+                    - (unsafe { memory::mem8 } as u32 >> 12),
             );
             if physical_page == tlb_physical_page {
                 unsafe {
-                    tlb_data[page as usize] =
+                    tlb_data[slot as usize] =
                         if has_code { entry | TLB_HAS_CODE } else { entry & !TLB_HAS_CODE }
                 }
-                if !has_code {
-                    clear_tlb_code(page);
+                if !has_code && (slot as usize) < TLB_LOW_SLOTS {
+                    clear_tlb_code(slot);
                 }
             }
         }
@@ -2792,15 +2921,16 @@ pub fn tlb_set_has_code(physical_page: Page, has_code: bool) {
 pub fn tlb_set_has_code_multiple(physical_pages: &HashSet<Page>, has_code: bool) {
     let physical_pages: Vec<Page> = physical_pages.into_iter().copied().collect();
     for i in 0..unsafe { valid_tlb_entries_count } {
-        let page = unsafe { valid_tlb_entries[i as usize] };
-        let entry = unsafe { tlb_data[page as usize] };
+        let slot = unsafe { valid_tlb_entries[i as usize] };
+        let entry = unsafe { tlb_data[slot as usize] };
         if 0 != entry {
             let tlb_physical_page = Page::of_u32(
-                (entry as u32 >> 12 ^ page as u32) - (unsafe { memory::mem8 } as u32 >> 12),
+                (entry as u32 >> 12 ^ tlb_slot_vpn_low(slot))
+                    - (unsafe { memory::mem8 } as u32 >> 12),
             );
             if physical_pages.contains(&tlb_physical_page) {
                 unsafe {
-                    tlb_data[page as usize] =
+                    tlb_data[slot as usize] =
                         if has_code { entry | TLB_HAS_CODE } else { entry & !TLB_HAS_CODE }
                 }
             }
@@ -2816,15 +2946,16 @@ pub fn check_tlb_invariants() {
     }
 
     for i in 0..unsafe { valid_tlb_entries_count } {
-        let page = unsafe { valid_tlb_entries[i as usize] };
-        let entry = unsafe { tlb_data[page as usize] };
+        let slot = unsafe { valid_tlb_entries[i as usize] };
+        let entry = unsafe { tlb_data[slot as usize] };
 
         if 0 == entry || 0 != entry & TLB_IN_MAPPED_RANGE {
             // there's no code in mapped memory
             continue;
         }
 
-        let target = (entry ^ page << 12) as u32 - unsafe { memory::mem8 } as u32;
+        let target = (entry ^ (tlb_slot_vpn_low(slot) << 12) as i32) as u32
+            - unsafe { memory::mem8 } as u32;
         dbg_assert!(!memory::in_mapped_range(target));
 
         let entry_has_code = entry & TLB_HAS_CODE != 0;
@@ -4441,6 +4572,157 @@ pub unsafe fn safe_write64(addr: i32, value: u64) -> OrPageFault<()> {
     Ok(())
 }
 
+
+// Memory access at full virtual address width, for 64-bit mode.
+//
+// These mirror the narrow versions above one for one, differing only in the address type and in
+// which translate they call. They are separate rather than replacing them because the narrow ones
+// are reached from every instruction in the 16- and 32-bit tables, where the address genuinely
+// cannot exceed 32 bits and widening it would cost the hot path for nothing.
+
+pub unsafe fn safe_read8_64(addr: i64) -> OrPageFault<i32> {
+    Ok(memory::read8(translate_address_read64(addr)?))
+}
+
+pub unsafe fn safe_read16_64(addr: i64) -> OrPageFault<i32> {
+    if addr & 0xFFF == 0xFFF {
+        Ok(safe_read8_64(addr)? | safe_read8_64(addr + 1)? << 8)
+    }
+    else {
+        Ok(memory::read16(translate_address_read64(addr)?))
+    }
+}
+
+pub unsafe fn safe_read32s_64(addr: i64) -> OrPageFault<i32> {
+    if addr & 0xFFF >= 0xFFD {
+        Ok(safe_read16_64(addr)? | safe_read16_64(addr + 2)? << 16)
+    }
+    else {
+        Ok(memory::read32s(translate_address_read64(addr)?))
+    }
+}
+
+pub unsafe fn safe_read64s_64(addr: i64) -> OrPageFault<u64> {
+    if addr & 0xFFF > 0x1000 - 8 {
+        Ok(safe_read32s_64(addr)? as u32 as u64 | (safe_read32s_64(addr + 4)? as u32 as u64) << 32)
+    }
+    else {
+        Ok(memory::read64s(translate_address_read64(addr)?) as u64)
+    }
+}
+
+pub unsafe fn writable_or_pagefault64(addr: i64, size: i32) -> OrPageFault<()> {
+    dbg_assert!(size < 0x1000);
+    dbg_assert!(size > 0);
+    let user = *cpl == 3;
+    translate_address64(addr, true, user, false, false, true)?;
+    let end = addr + size as i64 - 1 & !0xFFF;
+    if addr & !0xFFF != end & !0xFFF {
+        translate_address64(end, true, user, false, false, true)?;
+    }
+    Ok(())
+}
+
+unsafe fn write_phys_dirty(phys_addr: u32, can_skip_dirty_page: bool) {
+    if !can_skip_dirty_page {
+        jit::jit_dirty_page(Page::page_of(phys_addr));
+    }
+    else {
+        dbg_assert!(!jit::jit_page_has_code(Page::page_of(phys_addr)));
+    }
+}
+
+pub unsafe fn safe_write8_64(addr: i64, value: i32) -> OrPageFault<()> {
+    let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty64(addr)?;
+    if memory::in_mapped_range(phys_addr) {
+        memory::mmap_write8(phys_addr, value);
+    }
+    else {
+        write_phys_dirty(phys_addr, can_skip_dirty_page);
+        memory::write8_no_mmap_or_dirty_check(phys_addr, value);
+    };
+    Ok(())
+}
+
+pub unsafe fn safe_write16_64(addr: i64, value: i32) -> OrPageFault<()> {
+    let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty64(addr)?;
+    dbg_assert!(value >= 0 && value < 0x10000);
+    if addr & 0xFFF == 0xFFF {
+        virt_boundary_write16(phys_addr, translate_address_write64(addr + 1)?, value);
+    }
+    else if memory::in_mapped_range(phys_addr) {
+        memory::mmap_write16(phys_addr, value);
+    }
+    else {
+        write_phys_dirty(phys_addr, can_skip_dirty_page);
+        memory::write16_no_mmap_or_dirty_check(phys_addr, value);
+    };
+    Ok(())
+}
+
+pub unsafe fn safe_write32_64(addr: i64, value: i32) -> OrPageFault<()> {
+    let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty64(addr)?;
+    if addr & 0xFFF > 0x1000 - 4 {
+        virt_boundary_write32(
+            phys_addr,
+            translate_address_write64(addr + 3 & !3)? | (addr as u32 + 3 & 3),
+            value,
+        );
+    }
+    else if memory::in_mapped_range(phys_addr) {
+        memory::mmap_write32(phys_addr, value);
+    }
+    else {
+        write_phys_dirty(phys_addr, can_skip_dirty_page);
+        memory::write32_no_mmap_or_dirty_check(phys_addr, value);
+    };
+    Ok(())
+}
+
+pub unsafe fn safe_write64_64(addr: i64, value: u64) -> OrPageFault<()> {
+    if addr & 0xFFF > 0x1000 - 8 {
+        writable_or_pagefault64(addr, 8)?;
+        safe_write32_64(addr, value as i32).unwrap();
+        safe_write32_64(addr + 4, (value >> 32) as i32).unwrap();
+    }
+    else {
+        let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty64(addr)?;
+        if memory::in_mapped_range(phys_addr) {
+            memory::mmap_write64(phys_addr, value);
+        }
+        else {
+            write_phys_dirty(phys_addr, can_skip_dirty_page);
+            memory::write64_no_mmap_or_dirty_check(phys_addr, value);
+        }
+    };
+    Ok(())
+}
+
+pub unsafe fn safe_write128_64(addr: i64, value: reg128) -> OrPageFault<()> {
+
+    if addr & 0xFFF > 0x1000 - 16 {
+        writable_or_pagefault64(addr, 16)?;
+        safe_write64_64(addr, value.u64[0]).unwrap();
+        safe_write64_64(addr + 8, value.u64[1]).unwrap();
+    }
+    else {
+        let (phys_addr, can_skip_dirty_page) = translate_address_write_and_can_skip_dirty64(addr)?;
+        if memory::in_mapped_range(phys_addr) {
+            memory::mmap_write128(phys_addr, value.u64[0], value.u64[1]);
+        }
+        else {
+            if !can_skip_dirty_page {
+                jit::jit_dirty_page(Page::page_of(phys_addr));
+            }
+            else {
+                dbg_assert!(!jit::jit_page_has_code(Page::page_of(phys_addr as u32)));
+            }
+            memory::write128_no_mmap_or_dirty_check(phys_addr, value);
+        }
+    };
+    Ok(())
+}
+
 pub unsafe fn safe_write128(addr: i32, value: reg128) -> OrPageFault<()> {
     if addr & 0xFFF > 0x1000 - 16 {
         writable_or_pagefault(addr, 16)?;
@@ -4903,14 +5185,17 @@ pub fn clear_tlb_code(page: i32) {
     }
 }
 
-pub unsafe fn invlpg(addr: i32) {
-    let page = (addr as u32 >> 12) as i32;
+pub unsafe fn invlpg(addr: i32) { invlpg64(addr as u32 as i64) }
+
+pub unsafe fn invlpg64(addr: i64) {
     // Note: Doesn't remove this page from valid_tlb_entries: This isn't
     // necessary, because when valid_tlb_entries grows too large, it will be
     // empties by calling clear_tlb, which removes this entry as it isn't global.
     // This however means that valid_tlb_entries can contain some invalid entries
-    clear_tlb_code(page);
-    tlb_data[page as usize] = 0;
+    //
+    // A high slot may be holding some other page than the one being invalidated, since many fold
+    // onto each. Dropping it anyway only costs a walk to refill it.
+    clear_tlb_slot(tlb_slot(addr) as i32);
     *last_virt_eip = -1;
 }
 
@@ -4956,8 +5241,8 @@ pub unsafe fn get_valid_tlb_entries_count() -> i32 {
     }
     let mut result = 0;
     for i in 0..valid_tlb_entries_count {
-        let page = valid_tlb_entries[i as usize];
-        let entry = tlb_data[page as usize];
+        let slot = valid_tlb_entries[i as usize];
+        let entry = tlb_data[slot as usize];
         if 0 != entry {
             result += 1
         }
@@ -4972,8 +5257,8 @@ pub unsafe fn get_valid_global_tlb_entries_count() -> i32 {
     }
     let mut result = 0;
     for i in 0..valid_tlb_entries_count {
-        let page = valid_tlb_entries[i as usize];
-        let entry = tlb_data[page as usize];
+        let slot = valid_tlb_entries[i as usize];
+        let entry = tlb_data[slot as usize];
         if 0 != entry & TLB_GLOBAL {
             result += 1
         }

@@ -1,0 +1,5 @@
+; What long-mode-high-va.asm leaves behind once virtual addresses above 4 GiB can be named at all.
+r8  = 00000000deadbeef     ; written through the high address, read through the identity mapping
+r9  = 00000000deadbeef     ; and read back through the high address itself
+r10 = 00000000600d600d     ; a second page under the same pml4 entry
+r11 = 00000000deadbeef     ; with the first left as it was

@@ -19,15 +19,22 @@ use crate::cpu::memory;
 use crate::cpu::misc_instr::{getaf, getcf, getof, getpf, getsf, getzf};
 use crate::paging::OrPageFault;
 
-/// A linear address computed in 64-bit mode. v86 can only address the low 4 GiB.
+/// Narrow an address that v86 still keeps in 32 bits.
+///
+/// Data addressing is no longer limited this way - the tlb and the memory funnels take a full
+/// width virtual address. What is left are the instruction pointer and the segment base registers,
+/// which are i32 arrays shared with the jit and with the 16- and 32-bit instruction tables, so a
+/// value above 4 GiB has nowhere to go. Reaching those needs the jit's view of the instruction
+/// pointer widened as well, which is a change of its own.
 fn truncate_address(addr: i64) -> OrPageFault<i32> {
     if addr as u64 >> 32 != 0 {
-        dbg_log!("Unsupported: 64-bit address {:x} above 4 GiB", addr);
-        dbg_assert!(false, "Unsupported: address above 4 GiB");
+        dbg_log!("Unsupported: code or segment base {:x} above 4 GiB", addr);
+        dbg_assert!(false, "Unsupported: code or segment base above 4 GiB");
         return Err(());
     }
     Ok(addr as i32)
 }
+
 
 /// Narrow a value to the operand size, sign extended so the flag computation finds the sign bit
 /// where that size puts it. `osize` is 16, 32 or 64.
@@ -69,15 +76,15 @@ unsafe fn modrm_rm(modrm_byte: i32) -> i32 { (modrm_byte & 7) | rex_bit(REX_B) }
 /// Resolve the memory operand of a modrm byte using 64-bit addressing: the base and index are full
 /// registers, rm=101 with mod=00 is rip relative rather than an absolute disp32, and there is no
 /// 16-bit form.
-unsafe fn resolve_modrm64(modrm_byte: i32) -> OrPageFault<i32> {
+unsafe fn resolve_modrm64(modrm_byte: i32) -> OrPageFault<i64> {
     resolve_modrm64_imm(modrm_byte, 0)
 }
 
 /// As resolve_modrm64, for an instruction that carries `imm_bytes` of immediate after the modrm.
 /// Only rip relative addressing cares: it counts from the end of the whole instruction, and the
 /// immediate has not been read yet at the point the modrm is resolved.
-unsafe fn resolve_modrm64_imm(modrm_byte: i32, imm_bytes: i32) -> OrPageFault<i32> {
-    truncate_address(resolve_modrm64_address_imm(modrm_byte, imm_bytes)?)
+unsafe fn resolve_modrm64_imm(modrm_byte: i32, imm_bytes: i32) -> OrPageFault<i64> {
+    resolve_modrm64_address_imm(modrm_byte, imm_bytes)
 }
 
 /// The effective address a modrm byte describes, without checking whether v86 can reach it.
@@ -145,14 +152,14 @@ unsafe fn resolve_modrm64_address_imm(modrm_byte: i32, imm_bytes: i32) -> OrPage
 /// Push in 64-bit mode, where the stack is always 64 bits wide and the stack segment has no base
 unsafe fn push64(value: i64) -> OrPageFault<()> {
     let new_rsp = read_reg64(ESP) - 8;
-    safe_write64(truncate_address(new_rsp)?, value as u64)?;
+    safe_write64_64(new_rsp, value as u64)?;
     write_reg64(ESP, new_rsp);
     Ok(())
 }
 
 unsafe fn pop64() -> OrPageFault<i64> {
     let rsp = read_reg64(ESP);
-    let value = safe_read64s(truncate_address(rsp)?)? as i64;
+    let value = safe_read64s_64(rsp)? as i64;
     write_reg64(ESP, rsp + 8);
     Ok(value)
 }
@@ -174,9 +181,9 @@ unsafe fn read_rm_imm(modrm_byte: i32, osize: i32, imm_bytes: i32) -> OrPageFaul
     else {
         let addr = resolve_modrm64_imm(modrm_byte, imm_bytes)?;
         Ok(match osize {
-            16 => safe_read16(addr)? as i64,
-            32 => safe_read32s(addr)? as u32 as i64,
-            _ => safe_read64s(addr)? as i64,
+            16 => safe_read16_64(addr)? as i64,
+            32 => safe_read32s_64(addr)? as u32 as i64,
+            _ => safe_read64s_64(addr)? as i64,
         })
     }
 }
@@ -204,9 +211,9 @@ unsafe fn write_rm_imm(modrm_byte: i32, value: i64, osize: i32, imm_bytes: i32) 
     else {
         let addr = resolve_modrm64_imm(modrm_byte, imm_bytes)?;
         match osize {
-            16 => safe_write16(addr, value as i32 & 0xFFFF),
-            32 => safe_write32(addr, value as i32),
-            _ => safe_write64(addr, value as u64),
+            16 => safe_write16_64(addr, value as i32 & 0xFFFF),
+            32 => safe_write32_64(addr, value as i32),
+            _ => safe_write64_64(addr, value as u64),
         }
     }
 }
@@ -356,7 +363,7 @@ unsafe fn read_rm8_imm(modrm_byte: i32, imm_bytes: i32) -> OrPageFault<i32> {
         Ok(read_reg8(modrm_rm(modrm_byte)))
     }
     else {
-        safe_read8(resolve_modrm64_imm(modrm_byte, imm_bytes)?)
+        safe_read8_64(resolve_modrm64_imm(modrm_byte, imm_bytes)?)
     }
 }
 
@@ -366,7 +373,7 @@ unsafe fn write_rm8(modrm_byte: i32, value: i32) -> OrPageFault<()> {
         Ok(())
     }
     else {
-        safe_write8(resolve_modrm64(modrm_byte)?, value)
+        safe_write8_64(resolve_modrm64(modrm_byte)?, value)
     }
 }
 
@@ -714,7 +721,10 @@ unsafe fn sse_delegate(
     }
     else {
         match resolve_modrm64(modrm_byte) {
-            Ok(addr) => mem_fn(addr, r),
+            Ok(addr) => match truncate_address(addr) {
+                Ok(addr) => mem_fn(addr, r),
+                Err(()) => {},
+            },
             Err(()) => {},
         }
     }
@@ -779,7 +789,7 @@ unsafe fn adc_sbb(dst: i64, src: i64, osize: i32, is_sub: bool) -> i64 {
 /// must reuse this address rather than resolve the modrm a second time. Doing that reads further
 /// bytes as a displacement and leaves the decoder pointing into the middle of the next
 /// instruction. `None` means the operand was a register.
-unsafe fn read_rm_keep_addr(modrm_byte: i32, osize: i32) -> OrPageFault<(i64, Option<i32>)> {
+unsafe fn read_rm_keep_addr(modrm_byte: i32, osize: i32) -> OrPageFault<(i64, Option<i64>)> {
     read_rm_keep_addr_imm(modrm_byte, osize, 0)
 }
 
@@ -787,7 +797,7 @@ unsafe fn read_rm_keep_addr_imm(
     modrm_byte: i32,
     osize: i32,
     imm_bytes: i32,
-) -> OrPageFault<(i64, Option<i32>)> {
+) -> OrPageFault<(i64, Option<i64>)> {
     if modrm_byte >= 0xC0 {
         // read_rm has no byte case and would hand back the whole register, so the byte operand is
         // read here. The memory path below does handle 8, so only this side was missing it.
@@ -802,10 +812,10 @@ unsafe fn read_rm_keep_addr_imm(
     else {
         let addr = resolve_modrm64_imm(modrm_byte, imm_bytes)?;
         let value = match osize {
-            8 => safe_read8(addr)? as i64,
-            16 => safe_read16(addr)? as i64,
-            32 => safe_read32s(addr)? as u32 as i64,
-            _ => safe_read64s(addr)? as i64,
+            8 => safe_read8_64(addr)? as i64,
+            16 => safe_read16_64(addr)? as i64,
+            32 => safe_read32s_64(addr)? as u32 as i64,
+            _ => safe_read64s_64(addr)? as i64,
         };
         Ok((value, Some(addr)))
     }
@@ -814,7 +824,7 @@ unsafe fn read_rm_keep_addr_imm(
 /// Write back to the operand `read_rm_keep_addr` returned
 unsafe fn write_rm_keep_addr(
     modrm_byte: i32,
-    addr: Option<i32>,
+    addr: Option<i64>,
     value: i64,
     osize: i32,
 ) -> OrPageFault<()> {
@@ -829,10 +839,10 @@ unsafe fn write_rm_keep_addr(
             Ok(())
         },
         Some(a) => match osize {
-            8 => safe_write8(a, value as i32 & 0xFF),
-            16 => safe_write16(a, value as i32 & 0xFFFF),
-            32 => safe_write32(a, value as i32),
-            _ => safe_write64(a, value as u64),
+            8 => safe_write8_64(a, value as i32 & 0xFF),
+            16 => safe_write16_64(a, value as i32 & 0xFFFF),
+            32 => safe_write32_64(a, value as i32),
+            _ => safe_write64_64(a, value as u64),
         },
     }
 }
@@ -1741,7 +1751,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 match addr {
                     None => write_reg8(modrm_rm(modrm_byte), imm),
                     Some(a) => {
-                        let _ = safe_write8(a, imm);
+                        let _ = safe_write8_64(a, imm);
                     },
                 }
             }
@@ -1755,9 +1765,9 @@ pub unsafe fn run(opcode: i32) -> bool {
                     None => write_reg_sized(modrm_rm(modrm_byte), value, osize),
                     Some(a) => {
                         let _ = match osize {
-                            16 => safe_write16(a, value as i32 & 0xFFFF),
-                            32 => safe_write32(a, value as i32),
-                            _ => safe_write64(a, value as u64),
+                            16 => safe_write16_64(a, value as i32 & 0xFFFF),
+                            32 => safe_write32_64(a, value as i32),
+                            _ => safe_write64_64(a, value as u64),
                         };
                     },
                 }
@@ -1799,12 +1809,12 @@ pub unsafe fn run(opcode: i32) -> bool {
             let slot = if osize == 64 { 8 } else { 4 };
 
             let read_slot = |offset: i64| -> OrPageFault<i64> {
-                let addr = truncate_address(rsp + offset)?;
+                let addr = rsp + offset;
                 if osize == 64 {
-                    Ok(safe_read64s(addr)? as i64)
+                    Ok(safe_read64s_64(addr)? as i64)
                 }
                 else {
-                    Ok(safe_read32s(addr)? as u32 as i64)
+                    Ok(safe_read32s_64(addr)? as u32 as i64)
                 }
             };
 
@@ -1833,7 +1843,7 @@ pub unsafe fn run(opcode: i32) -> bool {
         0xCF => {
             let rsp = read_reg64(ESP);
             let slot = |i: i64| -> OrPageFault<i64> {
-                Ok(safe_read64s(truncate_address(rsp + i * 8)?)? as i64)
+                Ok(safe_read64s_64(rsp + i * 8)? as i64)
             };
             let (rip, cs, rflags, new_rsp, ss) =
                 match (|| Ok((slot(0)?, slot(1)?, slot(2)?, slot(3)?, slot(4)?)))() {
@@ -1914,7 +1924,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             else {
                 match resolve_modrm64(modrm_byte) {
                     Ok(addr) => {
-                        let _ = safe_write16(addr, value as i32);
+                        let _ = safe_write16_64(addr, value as i32);
                     },
                     Err(()) => {},
                 }
@@ -1934,7 +1944,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             }
             else {
                 match resolve_modrm64(modrm_byte) {
-                    Ok(addr) => match safe_read16(addr) {
+                    Ok(addr) => match safe_read16_64(addr) {
                         Ok(v) => v,
                         Err(()) => return true,
                     },
@@ -2167,7 +2177,7 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     else {
                         match resolve_modrm64(modrm_byte) {
                             Ok(addr) => {
-                                let _ = safe_write16(addr, value);
+                                let _ = safe_write16_64(addr, value);
                             },
                             Err(()) => {},
                         }
@@ -2219,19 +2229,19 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 else {
                     (*idtr_size, *idtr_offset)
                 };
-                if safe_write16(addr, size).is_err() {
+                if safe_write16_64(addr, size).is_err() {
                     return true;
                 }
                 // the base is eight bytes here, and v86 only ever holds a 32-bit one
-                let _ = safe_write64(addr + 2, base as u32 as u64);
+                let _ = safe_write64_64(addr + 2, base as u32 as u64);
                 return true;
             }
 
-            let size = match safe_read16(addr) {
+            let size = match safe_read16_64(addr) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
-            let base = match safe_read64s(addr + 2) {
+            let base = match safe_read64s_64(addr + 2) {
                 Ok(v) => v as i64,
                 Err(()) => return true,
             };
@@ -2476,10 +2486,10 @@ unsafe fn read_rm_narrow(modrm_byte: i32, word: bool) -> OrPageFault<i32> {
     else {
         let addr = resolve_modrm64(modrm_byte)?;
         if word {
-            safe_read16(addr)
+            safe_read16_64(addr)
         }
         else {
-            safe_read8(addr)
+            safe_read8_64(addr)
         }
     }
 }
