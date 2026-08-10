@@ -1,0 +1,6 @@
+; What long-mode-inc8.asm leaves behind. Measured on a real x86-64 under rosetta, see
+; long-mode-inc8-oracle.c.
+r8  = 1122334455667700     ; inc wrapped the low byte and left the rest of the register alone
+r9  = 0000000000000055     ; carry survived, since inc does not touch it
+r10 = 11223344556677ff     ; dec wrapped back the other way
+r11 = 0000000000000094     ; and carry stayed clear

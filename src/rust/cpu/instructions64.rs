@@ -1979,6 +1979,39 @@ pub unsafe fn run(opcode: i32) -> bool {
             string_op(opcode, osize)
         },
 
+        // inc and dec on a byte operand. The wider forms of these live in 0xff alongside the near
+        // call, jump and push; at byte width only inc and dec exist, so the group is smaller.
+        0xFE => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let op = modrm_byte >> 3 & 7;
+            if op > 1 {
+                dbg_log!("Unimplemented: 64-bit fe /{}", op);
+                return false;
+            }
+            let (raw, addr) = match read_rm_keep_addr(modrm_byte, 8) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let dst = sized(raw, 8);
+            let carry = getcf();
+            let result = if op == 0 {
+                group1_op(0, dst, 1, 8)
+            }
+            else {
+                group1_op(5, dst, 1, 8)
+            };
+            // inc and dec are add and sub that leave carry alone
+            *flags_changed &= !FLAG_CARRY;
+            *flags = *flags & !FLAG_CARRY | if carry { FLAG_CARRY } else { 0 };
+            if let Some(result) = result {
+                let _ = write_rm_keep_addr(modrm_byte, addr, result, 8);
+            }
+            true
+        },
+
         0xC3 => {
             match pop64() {
                 Ok(target) => match truncate_address(target) {
