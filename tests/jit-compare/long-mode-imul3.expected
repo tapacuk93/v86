@@ -1,0 +1,10 @@
+; The products and flags each case in long-mode-imul3.asm is defined to produce.
+rbx = 00000000000000a8     ; 7 * 24
+rcx = fffffffffffffff1     ; 5 * -3, the immediate sign extended from a byte
+rdx = 0000000100000000     ; 0x10000 * 0x10000, which fits in 64 bits
+rsi = 0000000000000000     ; 0x4000000000000000 * 4, with the top bits lost
+r14 = 0000000000000001     ; so carry is set
+rdi = 0000000000010000     ; 0x100 * 0x100 fits
+r15 = 0000000000000000     ; so carry is clear
+r8  = 0000000000000000     ; a 32-bit destination is written whole: it held -1 first
+r10 = 0000000000000063     ; 9 * 11, the multiplicand read from memory

@@ -813,6 +813,46 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // imul r, r/m, imm: the three operand form, which is how a signed index gets scaled by a
+        // structure size, so it sits next to movsxd in array addressing. 0x69 takes the immediate
+        // at the operand size, 0x6B a sign extended byte.
+        //
+        // The flags are the same story as the two operand form at 0f af: carry and overflow say
+        // the product did not fit in the destination, and the rest are undefined and left alone.
+        0x69 | 0x6B => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let reg = modrm_reg(modrm_byte);
+            let src = match read_rm(modrm_byte, osize) {
+                Ok(v) => sized(v, osize),
+                Err(()) => return true,
+            };
+            // the immediate follows the modrm and any displacement, so it is read after read_rm
+            let imm = if opcode == 0x6B {
+                match read_imm8s() {
+                    Ok(v) => v as i64,
+                    Err(()) => return true,
+                }
+            }
+            else {
+                match read_imm_osize(osize) {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            };
+            let wide = (src as i128) * (imm as i128);
+            let result = sized(wide as i64, osize);
+            let overflowed = wide != result as i128;
+
+            *flags_changed &= !(FLAG_CARRY | FLAG_OVERFLOW);
+            *flags = *flags & !(FLAG_CARRY | FLAG_OVERFLOW)
+                | if overflowed { FLAG_CARRY | FLAG_OVERFLOW } else { 0 };
+            write_reg_sized(reg, result, osize);
+            true
+        },
+
         // test al, imm8 and test rax/eax/ax, imm. test is and with the result thrown away, so only
         // the flags survive; the wider form's immediate is sign extended like every other one here.
         0xA8 => {
