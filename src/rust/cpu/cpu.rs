@@ -3612,6 +3612,10 @@ unsafe fn run_instruction_64(mut opcode: i32) {
             0x67 => *prefixes |= prefix::PREFIX_67,
             0xF2 => *prefixes |= prefix::PREFIX_F2,
             0xF3 => *prefixes |= prefix::PREFIX_F3,
+            // lock. One instruction runs at a time here and there is no second cpu to contend
+            // with, so the atomicity it asks for is already the case. Windows uses it on a
+            // throwaway operand as a barrier, which makes it common in kernel code.
+            0xF0 => {},
             // cs/ds/es/ss segment prefixes are ignored in 64-bit mode, fs/gs are not
             0x2E | 0x3E | 0x26 | 0x36 => {},
             0x64 => *prefixes = *prefixes & !prefix::PREFIX_MASK_SEGMENT | (FS as u8 + 1),

@@ -1,0 +1,6 @@
+; What long-mode-lock-fence.asm leaves behind. The read-modify-write values were measured on a
+; real x86-64; the fences have no result beyond decoding without trapping.
+r8  = 00000000f0f0f0ff     ; lock or, which still performs the or
+r9  = 3333333333333333     ; lock xadd, the sum left in memory
+r10 = 1111111111111111     ; and the old value returned in the register
+r11 = 000000000000600d     ; reached, so lfence, mfence and sfence all decoded

@@ -2559,6 +2559,26 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
+        // the fence group. lfence, mfence and sfence are the register forms of 0f ae /5, /6 and
+        // /7, and order memory against other cpus - of which there are none here, so they are the
+        // no-ops the 32-bit implementations already make them. Windows pairs them with a lock
+        // prefixed operation on a throwaway operand to get a full barrier.
+        //
+        // The memory forms are a different matter entirely - fxsave, xrstor, clflush - and are
+        // left to trap by name rather than being folded in here.
+        0xAE => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let group = modrm_byte >> 3 & 7;
+            if modrm_byte < 0xC0 || !matches!(group, 5 | 6 | 7) {
+                dbg_log!("Unimplemented: 64-bit 0fae /{} mod={}", group, modrm_byte >> 6);
+                return false;
+            }
+            true
+        },
+
         // cpuid
         0xA2 => {
             crate::cpu::instructions_0f::instr_0FA2();
