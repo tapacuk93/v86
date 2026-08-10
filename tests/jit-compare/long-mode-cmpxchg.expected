@@ -1,0 +1,9 @@
+; Which way each exchange in long-mode-cmpxchg.asm is defined to go.
+r14 = 0000000000000001     ; the accumulator matched, so zero is set
+rcx = 2222222222222222     ; and the register was stored in the destination
+rdx = 1111111111111111     ; leaving the accumulator alone
+r15 = 0000000000000000     ; the accumulator differed, so zero is clear
+rsi = 3333333333333333     ; and the destination was loaded into the accumulator
+rdi = 3333333333333333     ; leaving the destination alone
+r12 = 000000000000abcd     ; a 32-bit load writes the accumulator whole: it held -1 first
+r13 = 0000000000000099     ; the byte form, matching, so the destination took the register

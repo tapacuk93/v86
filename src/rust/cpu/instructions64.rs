@@ -1677,6 +1677,47 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         },
 
         // movzx r, r/m8 and r/m16
+        // cmpxchg r/m, r: compare the accumulator against the destination and, if they are equal,
+        // put the register there; otherwise load the destination into the accumulator. Every
+        // interlocked operation is built out of this, so a guest doing any locking wants it.
+        //
+        // The comparison is exactly cmp accumulator, destination, so it goes through the same
+        // group1 path and leaves the same flags behind. Zero is the one the caller branches on,
+        // and it is also what decides which way the exchange goes here.
+        //
+        // A read modify write, so the modrm is resolved once and the address reused. Hardware
+        // writes the destination back even when they differ, which matters for the bus lock and
+        // is not observable here.
+        0xB0 | 0xB1 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let size = if opcode == 0xB0 { 8 } else { osize };
+            let reg = modrm_reg(modrm_byte);
+            let (dst_raw, addr) = match read_rm_keep_addr(modrm_byte, size) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let dst = if size == 8 { dst_raw as i8 as i64 } else { sized(dst_raw, size) };
+            let acc = if size == 8 { read_reg8(0) as i8 as i64 } else { sized(read_reg64(EAX), size) };
+            group1_op(7, acc, dst, size);
+            if getzf() {
+                let src =
+                    if size == 8 { read_reg8(reg) as i64 } else { sized(read_reg64(reg), size) };
+                if write_rm_keep_addr(modrm_byte, addr, src, size).is_err() {
+                    return true;
+                }
+            }
+            else if size == 8 {
+                write_reg8(0, dst_raw as i32);
+            }
+            else {
+                write_reg_sized(EAX, dst_raw, size);
+            }
+            true
+        },
+
         0xB6 | 0xB7 => {
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
