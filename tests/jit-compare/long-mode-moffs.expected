@@ -1,0 +1,8 @@
+; What long-mode-moffs.asm leaves behind. Measured on a real x86-64 under rosetta, see
+; long-mode-moffs-oracle.c.
+r8  = 1122334455667788     ; the whole register stored through an absolute address
+r9  = eeeeeeeeaabbccdd     ; the 32-bit form reached four bytes and no more
+r10 = eeeeeeeeeeeeee5a     ; and the 8-bit form one
+r11 = 0102030405060708     ; loaded back at full width
+r12 = 0000000005060708     ; a 32-bit load clears the top half of rax
+r13 = ffffffffffffff08     ; a byte load leaves everything above it as it was

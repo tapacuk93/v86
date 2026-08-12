@@ -1811,6 +1811,61 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // mov between the accumulator and an absolute address carried in the instruction. The
+        // address is not a modrm and has no base register: in 64-bit mode it is a plain 64-bit
+        // number, which is what makes these their own encoding rather than a case of 0x88/0x89.
+        //
+        // Windows reaches its real mode thunk's parameter block this way, at a fixed low address
+        // it knows before it has a register to spare.
+        0xA0 | 0xA1 | 0xA2 | 0xA3 => {
+            // A 0x67 makes the address 32 bits, and so shortens the instruction. Reading eight
+            // bytes for it would take the following instruction's bytes as part of the address and
+            // then carry on decoding from the wrong place, so it is refused rather than guessed.
+            if 0 != *prefixes & crate::prefix::PREFIX_67 {
+                dbg_log!("Unimplemented: 32-bit absolute address on mov {:02x}", opcode);
+                return false;
+            }
+            let low = match read_imm32s() {
+                Ok(v) => v as u32 as i64,
+                Err(()) => return true,
+            };
+            let high = match read_imm32s() {
+                Ok(v) => v as u32 as i64,
+                Err(()) => return true,
+            };
+            let addr = high << 32 | low;
+
+            match opcode {
+                0xA0 => match safe_read8_64(addr) {
+                    Ok(v) => write_reg8(0, v),
+                    Err(()) => {},
+                },
+                0xA1 => {
+                    let value = match osize {
+                        16 => safe_read16_64(addr).map(|v| v as i64),
+                        32 => safe_read32s_64(addr).map(|v| v as u32 as i64),
+                        _ => safe_read64s_64(addr).map(|v| v as i64),
+                    };
+                    match value {
+                        Ok(v) => write_reg_sized(EAX, v, osize),
+                        Err(()) => {},
+                    }
+                },
+                0xA2 => {
+                    let _ = safe_write8_64(addr, read_reg8(0));
+                },
+                _ => {
+                    let value = read_reg64(EAX);
+                    let _ = match osize {
+                        16 => safe_write16_64(addr, value as i32 & 0xFFFF),
+                        32 => safe_write32_64(addr, value as i32),
+                        _ => safe_write64_64(addr, value as u64),
+                    };
+                },
+            }
+            true
+        },
+
         // clc, stc, cmc, cli, sti, cld, std - identical in 64-bit mode
         0xF8 => {
             crate::cpu::instructions::instr_F8();
