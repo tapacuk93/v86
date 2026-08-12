@@ -2456,9 +2456,10 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             };
             let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
             let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+            let has_f2 = 0 != *prefixes & crate::prefix::PREFIX_F2;
 
-            // The uniform family first; what falls past this is the stores, the f3 forms and the
-            // ones without a 0x66, which are each their own shape.
+            // The uniform family first; what falls past this is the stores, the scalar forms and
+            // the ones without a 0x66, which are each their own shape.
             if has_66 && !has_f3 {
                 if let Some(op) = sse_66_source_op(opcode) {
                     let r = modrm_reg(modrm_byte);
@@ -2480,15 +2481,48 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 }
             }
 
+            // movss and movsd, whose f3 or f2 prefix narrows the access to 32 or 64 bits. They are
+            // the scalar forms of 0x10/0x11 and have to be taken out of the 128-bit shape below,
+            // since storing 128 bits where the guest asked for 64 writes over whatever follows the
+            // destination - silently, because the extra bytes are as writable as the intended
+            // ones. Windows builds a structure that way, filling a field with movsd and the next
+            // one with an ordinary store.
+            //
+            // The load form zeroes the rest of the register rather than merging into it, which is
+            // what separates it from movlps.
+            if modrm_byte < 0xC0 && (opcode == 0x10 || opcode == 0x11) && (has_f3 || has_f2) {
+                let addr = match resolve_modrm64(modrm_byte) {
+                    Ok(a) => a,
+                    Err(()) => return true,
+                };
+                let r = modrm_reg(modrm_byte);
+                if opcode == 0x11 {
+                    let _ = if has_f3 {
+                        safe_write32_64(addr, read_xmm128s(r).u32[0] as i32)
+                    }
+                    else {
+                        safe_write64_64(addr, read_xmm64s(r))
+                    };
+                }
+                else if has_f3 {
+                    if let Ok(value) = safe_read32s_64(addr) {
+                        write_xmm128(r, value, 0, 0, 0);
+                    }
+                }
+                else {
+                    if let Ok(value) = safe_read64s_64(addr) {
+                        write_xmm128_2(r, value, 0);
+                    }
+                }
+                return true;
+            }
+
             // A memory operand here is a whole 128-bit access, and windows makes them through
             // kernel addresses - so they are done at full address width rather than delegated to
             // the 32-bit implementations, which take an i32 address. Only the operand differs
             // between these; what each does with it is still the existing implementation, reached
             // through the variants that take a value rather than an address.
-            //
-            // movss and movsd are deliberately absent: an f3 or f2 prefix on 0x10/0x11 makes the
-            // access 32 or 64 bits wide rather than 128, so they are not part of this shape.
-            if modrm_byte < 0xC0 && !(has_f3 && (opcode == 0x10 || opcode == 0x11)) {
+            if modrm_byte < 0xC0 {
                 let addr = match resolve_modrm64(modrm_byte) {
                     Ok(a) => a,
                     Err(()) => return true,
@@ -2552,6 +2586,20 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     0x7F => sse_delegate(modrm_byte, i0f::instr_F30F7F_reg, i0f::instr_F30F7F_mem),
                     _ => {
                         dbg_log!("Unimplemented 64-bit sse f3 {:02x}", opcode);
+                        false
+                    },
+                };
+            }
+
+            // Only the register forms of movsd reach this; its memory forms are handled above. An
+            // f2 on anything else in this family is a scalar double operation that has no
+            // implementation here yet, and says so rather than running the packed form beside it.
+            if has_f2 {
+                return match opcode {
+                    0x10 => sse_delegate(modrm_byte, i0f::instr_F20F10_reg, i0f::instr_F20F10_mem),
+                    0x11 => sse_delegate(modrm_byte, i0f::instr_F20F11_reg, i0f::instr_F20F11_mem),
+                    _ => {
+                        dbg_log!("Unimplemented 64-bit sse f2 {:02x}", opcode);
                         false
                     },
                 };

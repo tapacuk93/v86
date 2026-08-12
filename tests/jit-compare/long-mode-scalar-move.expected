@@ -1,0 +1,10 @@
+; What long-mode-scalar-move.asm leaves behind. Measured on a real x86-64 under rosetta, see
+; long-mode-scalar-move-oracle.c.
+r8  = 1122334455667788     ; movsd stored the low half of xmm0
+r9  = aaaaaaaaaaaaaaaa     ; and left the qword behind it alone
+r10 = aaaaaaaa55667788     ; movss reached only the low dword
+r11 = 0102030405060708     ; the loaded qword
+r12 = 0000000000000000     ; the rest of the register, zeroed rather than merged
+r13 = 0000000005060708     ; movss loads a dword and zeroes the rest
+r14 = 0102030405060708     ; the register form takes the source's low half
+r15 = ffffffffffffffff     ; and keeps the destination's high half
