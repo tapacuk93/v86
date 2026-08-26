@@ -179,22 +179,26 @@
             (i64.store
               (i32.const 96)
               (i64.const 9706626088991))
-            (i32.store
-              (i32.const 560)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 7)))
-            (i32.store
-              (i32.const 556)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 8)))
+            (i64.store
+              (i32.const 280)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 7))))
+            (i64.store
+              (i32.const 272)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 8))))
             (i32.store
               (i32.const 128)
               (get_local $l0))

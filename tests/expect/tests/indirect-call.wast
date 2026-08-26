@@ -73,22 +73,26 @@
                 (i32.add
                   (get_local $l8)
                   (i32.const 1)))
-              (i32.store
-                (i32.const 560)
-                (i32.or
-                  (i32.and
-                    (i32.load
-                      (i32.const 556))
-                    (i32.const -4096))
-                  (i32.const 2)))
-              (i32.store
-                (i32.const 556)
-                (i32.or
-                  (i32.and
-                    (i32.load
-                      (i32.const 556))
-                    (i32.const -4096))
-                  (i32.const 3)))
+              (i64.store
+                (i32.const 280)
+                (i64.extend_u/i32
+                  (i32.or
+                    (i32.and
+                      (i32.wrap/i64
+                        (i64.load
+                          (i32.const 272)))
+                      (i32.const -4096))
+                    (i32.const 2))))
+              (i64.store
+                (i32.const 272)
+                (i64.extend_u/i32
+                  (i32.or
+                    (i32.and
+                      (i32.wrap/i64
+                        (i64.load
+                          (i32.const 272)))
+                      (i32.const -4096))
+                    (i32.const 3))))
               (i32.store
                 (i32.const 128)
                 (get_local $l0))
@@ -196,8 +200,9 @@
               (i32.sub
                 (i32.or
                   (i32.and
-                    (i32.load
-                      (i32.const 556))
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
                     (i32.const -4096))
                   (i32.const 2))
                 (i32.load
@@ -246,15 +251,17 @@
               (get_local $l10))
             (set_local $l4
               (get_local $l11))
-            (i32.store offset=556
+            (i64.store offset=272
               (i32.const 0)
-              (get_local $l9))
+              (i64.extend_u/i32
+                (get_local $l9)))
             (br_if $L2
               (i32.ge_s
                 (tee_local $p0
                   (call $e.jit_find_cache_entry_in_page
-                    (i32.load
-                      (i32.const 556))
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
                     (i32.const 899)
                     (i32.const 3)))
                 (i32.const 0)))

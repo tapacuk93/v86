@@ -68,7 +68,7 @@ emulator.add_listener("emulator-loaded", function() {
     cpu.is_32[0] = true;
     cpu.stack_size_32[0] = true;
     cpu.mem8.set(executable, START);
-    cpu.instruction_pointer[0] = START;
+    cpu.set_instruction_pointer32(START);
     cpu.update_state_flags();
 
     for(let i = 0; i < 2000 && !cpu.in_hlt[0]; i++) cpu.main_loop();

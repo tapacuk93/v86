@@ -63,14 +63,16 @@
             )
             (block $B5
               (loop $L6
-                (i32.store
-                  (i32.const 556)
-                  (i32.or
-                    (i32.and
-                      (i32.load
-                        (i32.const 556))
-                      (i32.const -4096))
-                    (i32.const 0)))
+                (i64.store
+                  (i32.const 272)
+                  (i64.extend_u/i32
+                    (i32.or
+                      (i32.and
+                        (i32.wrap/i64
+                          (i64.load
+                            (i32.const 272)))
+                        (i32.const -4096))
+                      (i32.const 0))))
                 (br_if $B0
                   (i32.ge_u
                     (get_local $l8)
@@ -89,22 +91,26 @@
               (i32.add
                 (get_local $l8)
                 (i32.const 1)))
-            (i32.store
-              (i32.const 560)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 2)))
-            (i32.store
-              (i32.const 556)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 3)))
+            (i64.store
+              (i32.const 280)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 2))))
+            (i64.store
+              (i32.const 272)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 3))))
             (i32.store
               (i32.const 128)
               (get_local $l0))

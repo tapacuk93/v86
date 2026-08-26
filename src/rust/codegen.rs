@@ -20,9 +20,27 @@ pub fn gen_add_cs_offset(ctx: &mut JitContext) {
     }
 }
 
+/// The instruction pointer, narrowed to the 32 bits generated code works in.
+///
+/// It is stored 64 bits wide for the sake of 64-bit code, which the jit never compiles: a
+/// compiled block only runs with the state flags it was built for, and those carry is_64. So
+/// everything here is below 4 GiB and the high half is only ever zero.
 pub fn gen_get_eip(builder: &mut WasmBuilder) {
-    builder.load_fixed_i32(global_pointers::instruction_pointer as u32);
+    builder.load_fixed_i64(global_pointers::instruction_pointer as u32);
+    builder.wrap_i64_to_i32();
 }
+
+/// Store a 32-bit value computed on the stack as the whole 64-bit instruction pointer. The
+/// counterpart of gen_get_eip: zero extending is what keeps the high half clear.
+///
+/// `byte_offset` is where the store's own address operand puts it: callers either push the
+/// address of the instruction pointer and pass 0, or push 0 and pass the address.
+pub fn gen_set_eip_at(builder: &mut WasmBuilder, byte_offset: u32) {
+    builder.extend_unsigned_i32_to_i64();
+    builder.store_aligned_i64(byte_offset);
+}
+
+pub fn gen_set_eip(builder: &mut WasmBuilder) { gen_set_eip_at(builder, 0) }
 
 pub fn gen_set_eip_to_after_current_instruction(ctx: &mut JitContext) {
     ctx.builder
@@ -32,7 +50,7 @@ pub fn gen_set_eip_to_after_current_instruction(ctx: &mut JitContext) {
     ctx.builder.and_i32();
     ctx.builder.const_i32(ctx.cpu.eip as i32 & 0xFFF);
     ctx.builder.or_i32();
-    ctx.builder.store_aligned_i32(0);
+    gen_set_eip(ctx.builder);
 }
 
 pub fn gen_set_previous_eip_offset_from_eip_with_low_bits(
@@ -47,7 +65,7 @@ pub fn gen_set_previous_eip_offset_from_eip_with_low_bits(
     builder.and_i32();
     builder.const_i32(low_bits);
     builder.or_i32();
-    builder.store_aligned_i32(0);
+    gen_set_eip(builder);
 }
 
 pub fn gen_set_eip_low_bits(builder: &mut WasmBuilder, low_bits: i32) {
@@ -59,7 +77,7 @@ pub fn gen_set_eip_low_bits(builder: &mut WasmBuilder, low_bits: i32) {
     builder.and_i32();
     builder.const_i32(low_bits);
     builder.or_i32();
-    builder.store_aligned_i32(0);
+    gen_set_eip(builder);
 }
 
 pub fn gen_set_eip_low_bits_and_jump_rel32(builder: &mut WasmBuilder, low_bits: i32, n: i32) {
@@ -75,7 +93,7 @@ pub fn gen_set_eip_low_bits_and_jump_rel32(builder: &mut WasmBuilder, low_bits: 
         builder.const_i32(n);
         builder.add_i32();
     }
-    builder.store_aligned_i32(0);
+    gen_set_eip(builder);
 }
 
 pub fn gen_relative_jump(builder: &mut WasmBuilder, n: i32) {
@@ -85,7 +103,7 @@ pub fn gen_relative_jump(builder: &mut WasmBuilder, n: i32) {
         gen_get_eip(builder);
         builder.const_i32(n);
         builder.add_i32();
-        builder.store_aligned_i32(0);
+        gen_set_eip(builder);
     }
 }
 
@@ -1275,7 +1293,7 @@ pub fn gen_jmp_rel16(builder: &mut WasmBuilder, rel16: u16) {
         builder.get_local(&local);
         builder.add_i32();
 
-        builder.store_aligned_i32(0);
+        gen_set_eip(builder);
     }
     builder.free_local(local);
 }

@@ -1363,7 +1363,7 @@ pub unsafe fn instr_0F34() {
     }
     else {
         *flags &= !FLAG_VM & !FLAG_INTERRUPT;
-        *instruction_pointer = *sysenter_eip;
+        set_eip32(*sysenter_eip);
         write_reg32(ESP, *sysenter_esp);
         *sreg.offset(CS as isize) = seg as u16;
         *segment_is_null.offset(CS as isize) = false;
@@ -1392,7 +1392,7 @@ pub unsafe fn instr_0F35() {
         return;
     }
     else {
-        *instruction_pointer = read_reg32(EDX);
+        set_eip32(read_reg32(EDX));
         write_reg32(ESP, read_reg32(ECX));
         *sreg.offset(CS as isize) = (seg + 16 | 3) as u16;
         *segment_is_null.offset(CS as isize) = false;

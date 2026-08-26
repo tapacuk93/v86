@@ -2493,7 +2493,7 @@ pub fn check_dispatcher_target(target_index: i32, max: i32) {
 #[cfg(feature = "profiler")]
 pub fn enter_basic_block(phys_eip: u32) {
     let eip =
-        unsafe { cpu::translate_address_read(*global_pointers::instruction_pointer).unwrap() };
+        unsafe { cpu::translate_address_read64(*global_pointers::instruction_pointer).unwrap() };
     if Page::page_of(eip) != Page::page_of(phys_eip) {
         dbg_log!(
             "enter basic block failed block=0x{:x} actual eip=0x{:x}",

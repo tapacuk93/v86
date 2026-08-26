@@ -127,7 +127,7 @@ pub unsafe fn test_nle() -> bool { return !test_le(); }
 pub unsafe fn jmp_rel16(rel16: i32) {
     let cs_offset = get_seg_cs();
     // limit ip to 16 bit
-    *instruction_pointer = cs_offset + (*instruction_pointer - cs_offset + rel16 & 0xFFFF);
+    set_eip32(cs_offset + (get_eip32() - cs_offset + rel16 & 0xFFFF));
 }
 pub unsafe fn jmpcc16(condition: bool, imm16: i32) {
     if condition {
@@ -136,7 +136,7 @@ pub unsafe fn jmpcc16(condition: bool, imm16: i32) {
 }
 pub unsafe fn jmpcc32(condition: bool, imm32: i32) {
     if condition {
-        *instruction_pointer += imm32
+        set_eip32(get_eip32() + imm32)
     };
 }
 pub unsafe fn loope16(imm8s: i32) { jmpcc16(0 != decr_ecx_asize(is_asize_32()) && getzf(), imm8s); }

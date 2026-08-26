@@ -87,22 +87,26 @@
             (call $e.instr_660F54
               (i32.const 1136)
               (i32.const 0))
-            (i32.store
-              (i32.const 560)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 4)))
-            (i32.store
-              (i32.const 556)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 5)))
+            (i64.store
+              (i32.const 280)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 4))))
+            (i64.store
+              (i32.const 272)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 5))))
             (i32.store
               (i32.const 128)
               (get_local $l0))

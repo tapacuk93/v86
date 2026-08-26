@@ -43,7 +43,7 @@ function run(use_jit) {
                 for(let i = 0; i < 4; i++)
                     xmm[r * 4 + i] = (XMM0[i] ^ (r * 0x11111111)) | 0;
             for(let i = 0; i < 4; i++) xmm[4 + i] = XMM1[i];
-            cpu.instruction_pointer[0] = START;
+            cpu.set_instruction_pointer32(START);
             cpu.update_state_flags();
 
             const execute = () => {

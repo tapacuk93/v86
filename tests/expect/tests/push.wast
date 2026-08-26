@@ -110,22 +110,26 @@
               (get_local $l0))
             (set_local $l4
               (get_local $l9))
-            (i32.store
-              (i32.const 560)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 1)))
-            (i32.store
-              (i32.const 556)
-              (i32.or
-                (i32.and
-                  (i32.load
-                    (i32.const 556))
-                  (i32.const -4096))
-                (i32.const 2)))
+            (i64.store
+              (i32.const 280)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 1))))
+            (i64.store
+              (i32.const 272)
+              (i64.extend_u/i32
+                (i32.or
+                  (i32.and
+                    (i32.wrap/i64
+                      (i64.load
+                        (i32.const 272)))
+                    (i32.const -4096))
+                  (i32.const 2))))
             (i32.store
               (i32.const 128)
               (get_local $l0))

@@ -114,8 +114,11 @@ export function CPU(bus, wm, stop_idling)
      */
     this.in_hlt = view(Uint8Array, memory, 616, 1);
 
-    this.last_virt_eip = view(Int32Array, memory, 620, 1);
-    this.eip_phys = view(Int32Array, memory, 624, 1);
+    // The instruction fetch cache, alongside the instruction pointer it is compared against. Both
+    // are 64 bits wide, seen here as a low and a high half so that the state format stays plain
+    // Int32Arrays, as the register file already is.
+    this.last_virt_eip = view(Int32Array, memory, 288, 2);
+    this.eip_phys = view(Int32Array, memory, 296, 2);
     /** @type {Int32Array} */
     this.efer = view(Int32Array, memory, 628, 1);
     /** @type {Uint8Array} */
@@ -150,8 +153,11 @@ export function CPU(bus, wm, stop_idling)
     /** @type {!Object} */
     this.devices = {};
 
-    this.instruction_pointer = view(Int32Array, memory, 556, 1);
-    this.previous_ip = view(Int32Array, memory, 560, 1);
+    // 64 bits wide, as a low and a high half. Index 0 is the low one, which is the whole of it
+    // whenever the guest is below 4 GiB - which is everything but 64-bit code. Use
+    // set_instruction_pointer32 rather than writing index 0 on its own.
+    this.instruction_pointer = view(Int32Array, memory, 272, 2);
+    this.previous_ip = view(Int32Array, memory, 280, 2);
 
     // configured by guest
     this.apic_enabled = view(Uint8Array, memory, 548, 1);
@@ -480,6 +486,19 @@ CPU.prototype.set_reg32 = function(i, value)
     this.reg64[i << 1] = value;
 };
 
+/**
+ * Set the instruction pointer from 32-bit code, clearing the half above it. Writing index 0 on its
+ * own would leave whatever a previous 64-bit address left up there, and the interpreter reads all
+ * 64 bits of it.
+ *
+ * @param {number} value
+ */
+CPU.prototype.set_instruction_pointer32 = function(value)
+{
+    this.instruction_pointer[0] = value;
+    this.instruction_pointer[1] = 0;
+};
+
 /** @return {Int32Array} */
 CPU.prototype.get_reg32_array = function()
 {
@@ -509,8 +528,8 @@ CPU.prototype.get_state = function()
 
     state[16] = this.stack_size_32[0];
     state[17] = this.in_hlt[0];
-    state[18] = this.last_virt_eip[0];
-    state[19] = this.eip_phys[0];
+    state[18] = this.last_virt_eip;
+    state[19] = this.eip_phys;
 
     state[22] = this.sysenter_cs[0];
     state[23] = this.sysenter_eip[0];
@@ -522,8 +541,8 @@ CPU.prototype.get_state = function()
 
     state[30] = this.last_op_size[0];
 
-    state[37] = this.instruction_pointer[0];
-    state[38] = this.previous_ip[0];
+    state[37] = this.instruction_pointer;
+    state[38] = this.previous_ip;
     state[39] = this.get_reg32_array();
     state[40] = this.sreg;
     state[41] = this.dreg;
@@ -701,8 +720,8 @@ CPU.prototype.set_state = function(state)
     this.stack_size_32[0] = state[16];
 
     this.in_hlt[0] = state[17];
-    this.last_virt_eip[0] = state[18];
-    this.eip_phys[0] = state[19];
+    this.last_virt_eip.set(state[18]);
+    this.eip_phys.set(state[19]);
 
     this.sysenter_cs[0] = state[22];
     this.sysenter_eip[0] = state[23];
@@ -715,8 +734,8 @@ CPU.prototype.set_state = function(state)
 
     this.last_op_size[0] = state[30];
 
-    this.instruction_pointer[0] = state[37];
-    this.previous_ip[0] = state[38];
+    this.instruction_pointer.set(state[37]);
+    this.previous_ip.set(state[38]);
     for(let i = 0; i < 8; i++) this.set_reg32(i, state[39][i]);
     this.sreg.set(state[40]);
     this.dreg.set(state[41]);
@@ -1594,7 +1613,7 @@ CPU.prototype.load_multiboot_option_rom = function(buffer, initrd, cmdline)
                 // cpu.segment_access_bytes[i]
                 cpu.sreg[i] = i === REG_CS ? 0x08 : 0x10;
             }
-            cpu.instruction_pointer[0] = cpu.get_seg_cs() + entrypoint | 0;
+            cpu.set_instruction_pointer32(cpu.get_seg_cs() + entrypoint | 0);
             cpu.update_state_flags();
             dbg_log("Starting multiboot kernel at:", LOG_CPU);
             cpu.dump_state();

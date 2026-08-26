@@ -4,11 +4,11 @@
 //! generator's 16/32 operand size split doesn't extend to a third variant without reworking the
 //! whole table. Anything not implemented traps by name, so the guest itself says what to add next.
 //!
-//! Addresses are still i32 throughout v86, and its tlb is a flat array indexed by page number, so
-//! only the low 4 GiB of the virtual address space can be represented. Early 64-bit boot code runs
-//! identity mapped down there, which is enough to make progress; an address above 4 GiB traps
-//! rather than silently wrapping. Lifting that needs the tlb to become associative, which is a
-//! separate and much larger change.
+//! Data addresses, and now the instruction pointer, are full width: the tlb holds a virtual
+//! address wider than 32 bits and the fetch path reads through it. What is still narrow are the
+//! segment base registers, which are i32 arrays shared with the jit and with the 16- and 32-bit
+//! instruction tables; a base above 4 GiB traps rather than silently wrapping. Only fs and gs
+//! have a base worth anything in 64-bit mode, so that is a smaller gap than it sounds.
 
 #![allow(non_snake_case)]
 
@@ -21,15 +21,13 @@ use crate::paging::OrPageFault;
 
 /// Narrow an address that v86 still keeps in 32 bits.
 ///
-/// Data addressing is no longer limited this way - the tlb and the memory funnels take a full
-/// width virtual address. What is left are the instruction pointer and the segment base registers,
-/// which are i32 arrays shared with the jit and with the 16- and 32-bit instruction tables, so a
-/// value above 4 GiB has nowhere to go. Reaching those needs the jit's view of the instruction
-/// pointer widened as well, which is a change of its own.
+/// Neither data addressing nor the instruction pointer is limited this way any more. What is left
+/// are the segment base registers, which are i32 arrays shared with the jit and with the 16- and
+/// 32-bit instruction tables, so a base above 4 GiB has nowhere to go.
 fn truncate_address(addr: i64) -> OrPageFault<i32> {
     if addr as u64 >> 32 != 0 {
-        dbg_log!("Unsupported: code or segment base {:x} above 4 GiB", addr);
-        dbg_assert!(false, "Unsupported: code or segment base above 4 GiB");
+        dbg_log!("Unsupported: segment base {:x} above 4 GiB", addr);
+        dbg_assert!(false, "Unsupported: segment base above 4 GiB");
         return Err(());
     }
     Ok(addr as i32)
@@ -2038,7 +2036,7 @@ pub unsafe fn run(opcode: i32) -> bool {
         0xEB | 0xE9 => {
             let offset = if opcode == 0xEB { read_imm8s() } else { read_imm32s() };
             match offset {
-                Ok(v) => *instruction_pointer = (*instruction_pointer).wrapping_add(v),
+                Ok(v) => *instruction_pointer = (*instruction_pointer).wrapping_add(v as i64),
                 Err(()) => {},
             }
             after_block_boundary();
@@ -2051,7 +2049,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(v) => {
                     let return_address = *instruction_pointer as i64;
                     if push64(return_address).is_ok() {
-                        *instruction_pointer = (*instruction_pointer).wrapping_add(v);
+                        *instruction_pointer = (*instruction_pointer).wrapping_add(v as i64);
                     }
                 },
                 Err(()) => {},
@@ -2089,10 +2087,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             if !switch_seg_64_code(selector) {
                 return true;
             }
-            match truncate_address(target) {
-                Ok(a) => *instruction_pointer = a,
-                Err(()) => return true,
-            }
+            *instruction_pointer = target;
             write_reg64(ESP, rsp + slot * 2);
             after_block_boundary();
             true
@@ -2113,10 +2108,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             if !switch_seg_64_code(cs as i32 & 0xFFFF) {
                 return true;
             }
-            match truncate_address(rip) {
-                Ok(a) => *instruction_pointer = a,
-                Err(()) => return true,
-            }
+            *instruction_pointer = rip;
             update_eflags(rflags as i32);
             write_reg64(ESP, new_rsp);
             *sreg.offset(SS as isize) = ss as u16;
@@ -2165,10 +2157,7 @@ pub unsafe fn run(opcode: i32) -> bool {
 
         0xC3 => {
             match pop64() {
-                Ok(target) => match truncate_address(target) {
-                    Ok(a) => *instruction_pointer = a,
-                    Err(()) => {},
-                },
+                Ok(target) => *instruction_pointer = target,
                 Err(()) => {},
             }
             after_block_boundary();
@@ -2183,12 +2172,9 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Err(()) => return true,
             };
             match pop64() {
-                Ok(target) => match truncate_address(target) {
-                    Ok(a) => {
-                        *instruction_pointer = a;
-                        write_reg64(ESP, read_reg64(ESP) + imm as i64);
-                    },
-                    Err(()) => {},
+                Ok(target) => {
+                    *instruction_pointer = target;
+                    write_reg64(ESP, read_reg64(ESP) + imm as i64);
                 },
                 Err(()) => {},
             }
@@ -2201,7 +2187,7 @@ pub unsafe fn run(opcode: i32) -> bool {
             match read_imm8s() {
                 Ok(offset) => {
                     if test_condition(opcode & 0xF) {
-                        *instruction_pointer = (*instruction_pointer).wrapping_add(offset);
+                        *instruction_pointer = (*instruction_pointer).wrapping_add(offset as i64);
                     }
                 },
                 Err(()) => {},
@@ -2286,7 +2272,7 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             match read_imm32s() {
                 Ok(offset) => {
                     if test_condition(opcode & 0xF) {
-                        *instruction_pointer = (*instruction_pointer).wrapping_add(offset);
+                        *instruction_pointer = (*instruction_pointer).wrapping_add(offset as i64);
                     }
                 },
                 Err(()) => {},
@@ -3211,10 +3197,7 @@ pub unsafe fn run_ff(modrm_byte: i32) -> bool {
             if push64(return_address).is_err() {
                 return true;
             }
-            match truncate_address(target) {
-                Ok(a) => *instruction_pointer = a,
-                Err(()) => {},
-            }
+            *instruction_pointer = target;
             after_block_boundary();
             true
         },
@@ -3225,10 +3208,7 @@ pub unsafe fn run_ff(modrm_byte: i32) -> bool {
                 Ok(v) => v,
                 Err(()) => return true,
             };
-            match truncate_address(target) {
-                Ok(a) => *instruction_pointer = a,
-                Err(()) => {},
-            }
+            *instruction_pointer = target;
             after_block_boundary();
             true
         },

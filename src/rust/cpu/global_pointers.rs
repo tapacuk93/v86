@@ -25,13 +25,28 @@ pub const flags: *mut i32 = 120 as *mut i32;
 pub const last_op1_64: *mut i64 = 256 as *mut i64;
 pub const last_result_64: *mut i64 = 264 as *mut i64;
 
+// The instruction pointer and the cache that fetches through it, 64 bits wide because 64-bit code
+// runs at addresses that do not fit in 32. They live here rather than at their old places at 556,
+// 560, 620 and 624 because an i64 wants 8-byte alignment and those offsets are only 4-aligned;
+// moving them was cheaper than moving everything after them.
+//
+// Generated code still works in 32 bits: it only ever runs below 4 GiB, so it wraps this on the
+// way in and zero extends on the way out. See gen_get_eip and gen_set_eip in codegen.
+pub const instruction_pointer: *mut i64 = 272 as *mut i64;
+pub const previous_ip: *mut i64 = 280 as *mut i64;
+/// The page the last instruction fetch translated, or -1. Compared against the instruction pointer
+/// to decide whether eip_phys still applies.
+pub const last_virt_eip: *mut i64 = 288 as *mut i64;
+/// The physical address of that page, xor the virtual one, so that `eip_phys ^ eip` is the
+/// physical address of eip without a second subtraction.
+pub const eip_phys: *mut i64 = 296 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;
 pub const acpi_enabled: *mut bool = 552 as *mut bool;
 
-pub const instruction_pointer: *mut i32 = 556 as *mut i32;
-pub const previous_ip: *mut i32 = 560 as *mut i32;
+// (556 was instruction_pointer and 560 previous_ip, which moved to 272 to be 8-byte aligned)
 pub const idtr_size: *mut i32 = 564 as *mut i32;
 pub const idtr_offset: *mut i32 = 568 as *mut i32;
 pub const gdtr_size: *mut i32 = 572 as *mut i32;
@@ -39,8 +54,7 @@ pub const gdtr_offset: *mut i32 = 576 as *mut i32;
 pub const cr: *mut i32 = 580 as *mut i32;
 pub const cpl: *mut u8 = 612 as *mut u8;
 pub const in_hlt: *mut bool = 616 as *mut bool;
-pub const last_virt_eip: *mut i32 = 620 as *mut i32;
-pub const eip_phys: *mut i32 = 624 as *mut i32;
+// (620 was last_virt_eip and 624 eip_phys, which moved to 288 alongside the instruction pointer)
 /// IA32_EFER. Only the low 32 bits are stored, the high half is always 0
 pub const efer: *mut i32 = 628 as *mut i32;
 /// Whether cs has the l bit set, i.e. the cpu is in 64-bit mode rather than compatibility mode
