@@ -2280,6 +2280,73 @@ pub unsafe fn run(opcode: i32) -> bool {
 /// The 0x0F escaped opcodes
 unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
     match opcode {
+        // syscall. The fast path into a 64-bit kernel: no descriptor table read, no stack switch,
+        // and the return address in rcx rather than on a stack the kernel would have to trust.
+        //
+        // Windows enters every system call this way, and the kernel's first act on arriving is
+        // swapgs, so this and the gs base belong to the same piece of work.
+        0x05 => {
+            if 0 == *efer & EFER_SCE {
+                dbg_log!("#ud syscall with efer.sce clear");
+                trigger_ud();
+                return true;
+            }
+
+            // rcx takes the return address and r11 the flags, because syscall has no stack to put
+            // them on - it has not switched to one yet.
+            write_reg64(ECX, *instruction_pointer);
+            write_reg64(11, get_eflags() as i64);
+
+            *flags = (get_eflags() as i64 & !*sfmask) as i32 & !FLAG_RF;
+            *flags_changed = 0;
+
+            // star[47:32] is the cs syscall enters with; ss is the next descriptor after it. The
+            // low two bits are forced clear: the kernel runs at cpl 0 whatever the selector says.
+            let selector = (*star >> 32) as i32 & 0xFFFC;
+            load_syscall_segments(selector, selector + 8, true, 0);
+
+            *instruction_pointer = *lstar;
+            after_block_boundary();
+            true
+        },
+
+        // sysret. rex.w returns to 64-bit mode, without it to compatibility mode, and the two take
+        // different selectors out of star - which is why the operand size is what selects here.
+        0x07 => {
+            if 0 == *efer & EFER_SCE {
+                dbg_log!("#ud sysret with efer.sce clear");
+                trigger_ud();
+                return true;
+            }
+            if 0 != *cpl {
+                dbg_log!("#gp sysret at cpl {}", *cpl);
+                trigger_gp(0);
+                return true;
+            }
+
+            let to_64 = osize == 64;
+            // star[63:48] is the base of the pair sysret returns to. In 64-bit mode cs is the
+            // descriptor two past it, since the compatibility mode cs and the ss sit in between.
+            let base = (*star >> 48) as i32 & 0xFFFF;
+            let cs = (base + if to_64 { 16 } else { 0 }) | 3;
+            let ss = (base + 8) | 3;
+            load_syscall_segments(cs, ss, to_64, 3);
+
+            // r11 carries the flags syscall saved. vm and rf never survive a sysret, and bit 1 is
+            // always set.
+            *flags = (read_reg64(11) as i32 & !(FLAG_VM | FLAG_RF)) | FLAGS_DEFAULT;
+            *flags_changed = 0;
+
+            *instruction_pointer = if to_64 {
+                read_reg64(ECX)
+            }
+            else {
+                read_reg64(ECX) as i32 as u32 as i64
+            };
+            after_block_boundary();
+            true
+        },
+
         // jcc rel32
         0x80..=0x8F => {
             match read_imm32s() {

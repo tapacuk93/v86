@@ -54,6 +54,15 @@ pub const gs_base: *mut i64 = 312 as *mut i64;
 /// `gs_base`, which is the whole of how a kernel reaches its per-cpu block on a syscall.
 pub const gs_base_kernel: *mut i64 = 320 as *mut i64;
 
+/// The four msrs syscall and sysret run on. star holds two selectors rather than an address: bits
+/// 47:32 are the cs syscall enters with, and 63:48 the cs sysret returns to. lstar and cstar are
+/// the entry points from 64-bit and from compatibility mode; sfmask is the set of rflags bits
+/// syscall clears.
+pub const star: *mut i64 = 328 as *mut i64;
+pub const lstar: *mut i64 = 336 as *mut i64;
+pub const cstar: *mut i64 = 344 as *mut i64;
+pub const sfmask: *mut i64 = 352 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;

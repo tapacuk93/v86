@@ -242,6 +242,10 @@ pub const IA32_PAT: i32 = 0x277;
 pub const IA32_RTIT_CTL: i32 = 0x570;
 pub const MSR_PKG_C2_RESIDENCY: i32 = 0x60D;
 pub const IA32_EFER: i32 = 0xC0000080u32 as i32;
+pub const IA32_STAR: i32 = 0xC0000081u32 as i32;
+pub const IA32_LSTAR: i32 = 0xC0000082u32 as i32;
+pub const IA32_CSTAR: i32 = 0xC0000083u32 as i32;
+pub const IA32_FMASK: i32 = 0xC0000084u32 as i32;
 pub const IA32_FS_BASE: i32 = 0xC0000100u32 as i32;
 pub const IA32_GS_BASE: i32 = 0xC0000101u32 as i32;
 /// The gs base that swapgs will bring into use. 0xC0000101 is the *active* gs base, which this was
@@ -254,9 +258,10 @@ pub const EFER_SCE: i32 = 1 << 0;
 pub const EFER_LME: i32 = 1 << 8;
 pub const EFER_LMA: i32 = 1 << 10;
 pub const EFER_NXE: i32 = 1 << 11;
-/// lma is set by hardware rather than by the guest, and syscall (sce) is not implemented, so
-/// writing either raises #gp along with the reserved bits.
-pub const EFER_WRITABLE_MASK: i32 = EFER_NXE | if config::ENABLE_LONG_MODE { EFER_LME } else { 0 };
+/// lma is set by hardware rather than by the guest, so writing it raises #gp along with the
+/// reserved bits. sce and lme only mean anything in a build that has long mode.
+pub const EFER_WRITABLE_MASK: i32 =
+    EFER_NXE | if config::ENABLE_LONG_MODE { EFER_LME | EFER_SCE } else { 0 };
 
 pub const IA32_APIC_BASE_BSP: i32 = 1 << 8;
 pub const IA32_APIC_BASE_EXTD: i32 = 1 << 10;
@@ -662,14 +667,12 @@ pub unsafe fn call_interrupt_vector_64(
     let old_rsp = read_reg64(ESP);
     let mut rsp = old_rsp & !0xF;
 
+    // At full width: a 64-bit kernel puts its stacks in the high half of the address space, so an
+    // interrupt taken while one is loaded pushes to an address nowhere near the first 4 GiB. iret
+    // already pops at this width.
     let push = |rsp: &mut i64, value: i64| -> OrPageFault<()> {
         *rsp -= 8;
-        let addr = *rsp;
-        if addr as u64 >> 32 != 0 {
-            dbg_log!("Unsupported: interrupt stack above 4 GiB");
-            return Err(());
-        }
-        safe_write64(addr as i32, value as u64)
+        safe_write64_64(*rsp, value as u64)
     };
 
     let eflags = get_eflags();
@@ -727,6 +730,36 @@ unsafe fn switch_seg_64_interrupt(selector: i32) -> bool {
     set_cs_is_64(descriptor.is_long());
     update_state_flags();
     true
+}
+
+/// Load cs and ss for syscall and sysret.
+///
+/// Neither instruction reads a descriptor table: the selectors come out of star and the hidden
+/// state is fixed by the architecture - flat, present, and 64-bit or 32-bit according to which
+/// form was used. That is the point of them, a system call that costs no memory reference, and it
+/// is why this cannot go through switch_seg.
+pub unsafe fn load_syscall_segments(cs_selector: i32, ss_selector: i32, is_long: bool, dpl: u8) {
+    let code = 0x80 | (dpl << 5) | 0x10 | 0x08 | 0x02 | 0x01; // P dpl S E R A
+    let data = 0x80 | (dpl << 5) | 0x10 | 0x02 | 0x01; // P dpl S W A
+
+    *segment_is_null.offset(CS as isize) = false;
+    *segment_limits.offset(CS as isize) = 0xFFFFFFFF;
+    *segment_offsets.offset(CS as isize) = 0;
+    *segment_access_bytes.offset(CS as isize) = code;
+    *sreg.offset(CS as isize) = cs_selector as u16;
+
+    *segment_is_null.offset(SS as isize) = false;
+    *segment_limits.offset(SS as isize) = 0xFFFFFFFF;
+    *segment_offsets.offset(SS as isize) = 0;
+    *segment_access_bytes.offset(SS as isize) = data;
+    *sreg.offset(SS as isize) = ss_selector as u16;
+
+    *cpl = dpl;
+    *stack_size_32 = true;
+    // A 64-bit code segment has d clear, so the 32-bit size is the compatibility mode case only.
+    update_cs_size(!is_long);
+    set_cs_is_64(is_long);
+    update_state_flags();
 }
 
 pub unsafe fn switch_cs_real_mode(selector: i32) {
@@ -5483,6 +5516,11 @@ pub unsafe fn reset_cpu() {
     *fs_base = 0;
     *gs_base = 0;
     *gs_base_kernel = 0;
+
+    *star = 0;
+    *lstar = 0;
+    *cstar = 0;
+    *sfmask = 0;
 
     *fpu_stack_empty = 0xFF;
     *fpu_stack_ptr = 0;

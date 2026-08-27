@@ -21,6 +21,8 @@
 //   DISABLE_JIT=1    interpret everything, for telling a codegen bug from an interpreter one
 //   HOT_FROM=n       ignore the first n seconds in the hot-address report, so that a phase late in
 //                    the boot is not drowned out by the phases that worked
+//   KEYS_AT=n,m,...  press a key at each of these times, in seconds. A guest polling int 16h is
+//                    waiting for one; whether pressing it changes anything says which guest it is
 
 import fs from "node:fs";
 import zlib from "node:zlib";
@@ -55,6 +57,7 @@ const MEMORY = (+process.env.MEMORY || 1024) * 1024 * 1024;
 const SAMPLE_MS = +process.env.SAMPLE_MS || 250;
 const SHOT_MS = +process.env.SHOT_MS || 5000;
 const HOT_FROM = +process.env.HOT_FROM || 0;
+const KEYS_AT = (process.env.KEYS_AT || "").split(",").filter(Boolean).map(Number);
 
 fs.mkdirSync(OUT, { recursive: true });
 const log_file = fs.createWriteStream(OUT + "/boot.log");
@@ -246,6 +249,10 @@ function screenshot(tag)
 let last_counter = 0;
 let instructions = 0;
 
+const spaces = new Set();
+let last_tick = -1;
+let ticks_seen = 0;
+
 const seen = new Set();
 function milestone(name)
 {
@@ -263,6 +270,14 @@ const sampler = setInterval(() => {
     instructions += (counter - last_counter) >>> 0;
     last_counter = counter;
 
+    // Each new cr3 is a new address space, which is the clearest sign of real progress there is:
+    // the bootloader builds one, winload builds another, and the kernel another after that.
+    if(s.cr3 && !spaces.has(s.cr3))
+    {
+        spaces.add(s.cr3);
+        milestone(`address space #${spaces.size} (cr3=${s.cr3.toString(16)})`);
+    }
+
     if(s.cr0 & 1) milestone("protected mode");
     if(s.is_32) milestone("32-bit code segment");
     if(s.cr4 & 0x20) milestone("pae enabled (cr4.pae)");
@@ -272,6 +287,17 @@ const sampler = setInterval(() => {
     if(s.efer & 0x800) milestone("nx enabled (efer.nxe)");
     if(emulator.v86.cpu.devices.vga && emulator.v86.cpu.devices.vga.graphical_mode)
         milestone("graphical mode");
+
+    // The bios tick count in the bda at 0040:006c, which the int 1a ah=00 service returns. A boot
+    // manager counting down a timeout reads this and nothing else, so a stuck value is a hang.
+    const mem = emulator.v86.cpu.mem8;
+    const tick = mem[0x46c] | mem[0x46d] << 8 | mem[0x46e] << 16 | mem[0x46f] << 24;
+    if(tick !== last_tick)
+    {
+        if(ticks_seen++ < 6 || ticks_seen % 200 === 0)
+            note(`[${elapsed.toFixed(1)}s] bda tick = ${tick} (${ticks_seen} changes so far)`);
+        last_tick = tick;
+    }
 
     const line = `cs=${s.cs.toString(16)} cpl=${s.cpl} 32=${s.is_32} 64=${s.is_64} ` +
         `cr0=${s.cr0.toString(16)} cr3=${s.cr3.toString(16)} cr4=${s.cr4.toString(16)} ` +
@@ -291,6 +317,14 @@ const shooter = setInterval(() => {
     screenshot(tag);
 }, SHOT_MS);
 
+for(const at of KEYS_AT)
+{
+    setTimeout(() => {
+        note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** pressing enter`);
+        emulator.keyboard_send_scancodes([0x1c, 0x9c]);
+    }, at * 1000);
+}
+
 setTimeout(() => {
     clearInterval(sampler);
     clearInterval(shooter);
@@ -304,6 +338,7 @@ setTimeout(() => {
         note(`  ${(100 * n / total).toFixed(1).padStart(5)}%  ${n.toString().padStart(5)}  eip=${eip}`);
     }
     note("\n== resets: " + reboots);
+    note("== bda tick count: " + last_tick + ", changed " + ticks_seen + " times");
     note("\n== milestones reached: " + (seen.size ? [...seen].join(", ") : "none"));
     note("\n== final state\n  " + JSON.stringify(state(), null, 2).replace(/\n/g, "\n  "));
 

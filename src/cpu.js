@@ -87,6 +87,12 @@ export function CPU(bus, wm, stop_idling)
     this.fs_base = view(Int32Array, memory, 304, 2);
     this.gs_base = view(Int32Array, memory, 312, 2);
     this.gs_base_kernel = view(Int32Array, memory, 320, 2);
+
+    // The four msrs syscall and sysret run on. star holds two selectors rather than an address.
+    this.star = view(Int32Array, memory, 328, 2);
+    this.lstar = view(Int32Array, memory, 336, 2);
+    this.cstar = view(Int32Array, memory, 344, 2);
+    this.sfmask = view(Int32Array, memory, 352, 2);
     this.segment_limits = view(Uint32Array, memory, 768, 8);
     this.segment_access_bytes = view(Uint8Array, memory, 512, 8);
 
@@ -633,6 +639,10 @@ CPU.prototype.get_state = function()
     state[94] = this.fs_base;
     state[95] = this.gs_base;
     state[96] = this.gs_base_kernel;
+    state[97] = this.star;
+    state[98] = this.lstar;
+    state[99] = this.cstar;
+    state[100] = this.sfmask;
 
     return state;
 };
@@ -808,6 +818,10 @@ CPU.prototype.set_state = function(state)
     state[94] && this.fs_base.set(state[94]);
     state[95] && this.gs_base.set(state[95]);
     state[96] && this.gs_base_kernel.set(state[96]);
+    state[97] && this.star.set(state[97]);
+    state[98] && this.lstar.set(state[98]);
+    state[99] && this.cstar.set(state[99]);
+    state[100] && this.sfmask.set(state[100]);
 
     this.fw_value = state[62];
 

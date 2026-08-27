@@ -1,0 +1,9 @@
+; What long-mode-syscall.asm leaves behind. Derived from the architecture rather than measured:
+; syscall and sysret are ring 0, so the user space oracle the other fixtures use cannot run them.
+r8  = 1111111111111111     ; survived the trip down to cpl 3, up through syscall and back
+r9  = 2222222222222222
+r10 = 1                    ; syscall entered with the cs star names, rpl forced to 0
+r12 = 1                    ; and ss as the descriptor after it
+r13 = 1                    ; rcx held the address of the instruction after syscall
+r14 = 1                    ; syscall cleared the rflags bits sfmask asked for
+r15 = 1                    ; sysret returned to cpl 3 with the cs star names

@@ -1249,6 +1249,10 @@ pub unsafe fn instr_0F30() {
             // Enable Misc. Processor Features
         },
         IA32_MCG_CAP => {}, // netbsd
+        IA32_STAR => *star = (high as i64) << 32 | (low as u32 as i64),
+        IA32_LSTAR => *lstar = (high as i64) << 32 | (low as u32 as i64),
+        IA32_CSTAR => *cstar = (high as i64) << 32 | (low as u32 as i64),
+        IA32_FMASK => *sfmask = (high as i64) << 32 | (low as u32 as i64),
         IA32_FS_BASE => set_segment_base64(FS, (high as i64) << 32 | (low as u32 as i64)),
         IA32_GS_BASE => set_segment_base64(GS, (high as i64) << 32 | (low as u32 as i64)),
         IA32_KERNEL_GS_BASE => *gs_base_kernel = (high as i64) << 32 | (low as u32 as i64),
@@ -1307,14 +1311,19 @@ pub unsafe fn instr_0F32() {
             high = (tsc >> 32) as i32
         },
         IA32_EFER => low = *efer,
-        IA32_FS_BASE | IA32_GS_BASE | IA32_KERNEL_GS_BASE => {
-            let base = match index {
+        IA32_FS_BASE | IA32_GS_BASE | IA32_KERNEL_GS_BASE | IA32_STAR | IA32_LSTAR | IA32_CSTAR
+        | IA32_FMASK => {
+            let value = match index {
                 IA32_FS_BASE => *fs_base,
                 IA32_GS_BASE => *gs_base,
-                _ => *gs_base_kernel,
+                IA32_KERNEL_GS_BASE => *gs_base_kernel,
+                IA32_STAR => *star,
+                IA32_LSTAR => *lstar,
+                IA32_CSTAR => *cstar,
+                _ => *sfmask,
             };
-            low = base as i32;
-            high = (base >> 32) as i32;
+            low = value as i32;
+            high = (value >> 32) as i32;
         },
         IA32_FEAT_CTL => {}, // linux 5.x
         MSR_TEST_CTRL => {}, // linux 5.x
