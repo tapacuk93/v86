@@ -1,0 +1,8 @@
+; What long-mode-cmpxchg16b.asm leaves behind.
+r8  = 1                    ; the first compare failed, as it should have
+r9  = 1111111122222222     ; and loaded the low half of what was there into rax
+r10 = 3333333344444444     ; and the high half into rdx
+r12 = 1                    ; the second compare, against those values, matched
+r13 = 5555555555555555     ; so rbx went into the low half
+r14 = 6666666666666666     ; and rcx into the high half
+r15 = d7                   ; sahf set every flag it can, and bit 1 always reads set

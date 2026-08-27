@@ -748,6 +748,63 @@ fn sse_66_source_op(opcode: i32) -> Option<unsafe fn(reg128, i32)> {
     })
 }
 
+/// cmpxchg8b and cmpxchg16b: compare the pair in edx:eax (or rdx:rax) against a location twice the
+/// operand size, and swap in ecx:ebx (or rcx:rbx) if they match.
+///
+/// The 128-bit form is what windows builds its interlocked list operations out of, and it is one of
+/// the features windows 8 and later refuse to boot without.
+///
+/// Reading and then writing is not the atomic operation the instruction names, but there is one cpu
+/// here and nothing else to contend with. The write is checked for faultability first so that a
+/// fault cannot leave the compare done and the swap half made.
+unsafe fn cmpxchg_double(addr: i64, osize: i32) {
+    let width = if osize == 64 { 16 } else { 8 };
+    if writable_or_pagefault64(addr, width).is_err() {
+        return;
+    }
+
+    let (low, high) = if width == 16 {
+        let v = match safe_read128s_64(addr) {
+            Ok(v) => v,
+            Err(()) => return,
+        };
+        (v.u64[0] as i64, v.u64[1] as i64)
+    }
+    else {
+        let v = match safe_read64s_64(addr) {
+            Ok(v) => v,
+            Err(()) => return,
+        };
+        (v as u32 as i64, (v >> 32) as u32 as i64)
+    };
+
+    let (want_low, want_high) = if width == 16 {
+        (read_reg64(EAX), read_reg64(EDX))
+    }
+    else {
+        (read_reg64(EAX) as u32 as i64, read_reg64(EDX) as u32 as i64)
+    };
+
+    if want_low == low && want_high == high {
+        *flags |= FLAG_ZERO;
+        let (new_low, new_high) = (read_reg64(EBX), read_reg64(ECX));
+        let _ = if width == 16 {
+            safe_write128_64(addr, reg128 { u64: [new_low as u64, new_high as u64] })
+        }
+        else {
+            safe_write64_64(addr, new_low as u32 as u64 | (new_high as u64) << 32)
+        };
+    }
+    else {
+        *flags &= !FLAG_ZERO;
+        // The failing case writes the whole register at 64 bits and only the low half at 32, which
+        // in 64-bit mode means the 32-bit form zero extends like every other 32-bit write.
+        write_reg_sized(EAX, low, if width == 16 { 64 } else { 32 });
+        write_reg_sized(EDX, high, if width == 16 { 64 } else { 32 });
+    }
+    *flags_changed &= !FLAG_ZERO;
+}
+
 /// The string instructions - movs, cmps, stos, lods and scas - in 64-bit mode.
 ///
 /// Much simpler than their 16- and 32-bit forms, which is why they are here rather than delegated:
@@ -1320,6 +1377,18 @@ pub unsafe fn run(opcode: i32) -> bool {
         // only a 0x66 prefix narrows them, so the check is against 16 rather than for 64. The
         // 16-bit form moves the stack pointer by two rather than eight, which needs its own narrow
         // push and pop, and nothing has asked for it.
+        // sahf and lahf, which move the low byte of the flags to and from ah. 64-bit mode keeps
+        // both, conditional on the lahf_lm cpuid bit.
+        0x9E => {
+            *flags = (get_eflags() & !0xFF) | (read_reg8(AH) & 0xD5) | FLAGS_DEFAULT;
+            *flags_changed = 0;
+            true
+        },
+        0x9F => {
+            write_reg8(AH, get_eflags() & 0xFF);
+            true
+        },
+
         0x9C => {
             if osize == 16 {
                 dbg_log!("Unimplemented: pushfw");
@@ -3072,15 +3141,26 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         // 0f c7 /6 reg is rdrand, which windows uses to seed itself once cpuid advertises it.
         // rex.w makes it 64 bits wide, which needs two draws from the 32-bit source.
         //
-        // The other member of this group, /1 mem, is cmpxchg8b - and rex.w turns that one into
-        // cmpxchg16b, a different instruction rather than a wider form of the same one. Neither is
-        // implemented here, so both fall through and trap by name.
+        // The other member of this group, /1 mem, is cmpxchg8b, which rex.w turns into cmpxchg16b -
+        // a different instruction rather than a wider form of the same one. Windows requires
+        // cmpxchg16b to boot at all and builds its interlocked list operations out of it, so both
+        // are here.
         0xC7 => {
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
                 Err(()) => return true,
             };
             let group = modrm_byte >> 3 & 7;
+
+            if group == 1 && modrm_byte < 0xC0 {
+                let addr = match resolve_modrm64(modrm_byte) {
+                    Ok(a) => a,
+                    Err(()) => return true,
+                };
+                cmpxchg_double(addr, osize);
+                return true;
+            }
+
             if group != 6 || modrm_byte < 0xC0 {
                 dbg_log!("Unimplemented: 64-bit 0fc7 /{}", group);
                 return false;

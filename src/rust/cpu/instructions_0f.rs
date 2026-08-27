@@ -3290,6 +3290,12 @@ pub unsafe fn instr_0FA2() {
             eax = 3 | 7 << 4 | 6 << 8; // pentium3
             ebx = 1 << 16 | 8 << 8; // cpu count, clflush size
             ecx = 1 << 0 | 1 << 23 | 1 << 30; // sse3, popcnt, rdrand
+            if config::ENABLE_LONG_MODE {
+                // cmpxchg16b. Only encodable with rex.w, so it says nothing to a 32-bit guest, but
+                // windows 8 and later check for it before they will boot at all and build their
+                // interlocked list operations out of it.
+                ecx |= 1 << 13;
+            }
             let vme = 0 << 1;
             if config::VMWARE_HYPERVISOR_PORT {
                 ecx |= 1 << 31
@@ -3368,6 +3374,7 @@ pub unsafe fn instr_0FA2() {
             edx = 1 << 20; // nx
             if config::ENABLE_LONG_MODE {
                 edx |= 1 << 29; // lm
+                ecx |= 1 << 0; // lahf/sahf in 64-bit mode
             }
         },
 
