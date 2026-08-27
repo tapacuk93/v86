@@ -200,7 +200,7 @@ pub unsafe fn instr32_0F01_0_reg(_r: i32) { trigger_ud(); }
 unsafe fn sgdt(addr: i32, mask: i32) {
     return_on_pagefault!(writable_or_pagefault(addr, 6));
     safe_write16(addr, *gdtr_size).unwrap();
-    safe_write32(addr + 2, *gdtr_offset & mask).unwrap();
+    safe_write32(addr + 2, *gdtr_offset as i32 & mask).unwrap();
 }
 #[no_mangle]
 pub unsafe fn instr16_0F01_0_mem(addr: i32) { sgdt(addr, 0xFFFFFF) }
@@ -215,7 +215,7 @@ pub unsafe fn instr32_0F01_1_reg(_r: i32) { trigger_ud(); }
 unsafe fn sidt(addr: i32, mask: i32) {
     return_on_pagefault!(writable_or_pagefault(addr, 6));
     safe_write16(addr, *idtr_size).unwrap();
-    safe_write32(addr + 2, *idtr_offset & mask).unwrap();
+    safe_write32(addr + 2, *idtr_offset as i32 & mask).unwrap();
 }
 #[no_mangle]
 pub unsafe fn instr16_0F01_1_mem(addr: i32) { sidt(addr, 0xFFFFFF) }
@@ -235,7 +235,7 @@ unsafe fn lgdt(addr: i32, mask: i32) {
     let size = return_on_pagefault!(safe_read16(addr));
     let offset = return_on_pagefault!(safe_read32s(addr + 2));
     *gdtr_size = size;
-    *gdtr_offset = offset & mask;
+    *gdtr_offset = (offset & mask) as i64;
 }
 #[no_mangle]
 pub unsafe fn instr16_0F01_2_mem(addr: i32) { lgdt(addr, 0xFFFFFF); }
@@ -255,7 +255,7 @@ unsafe fn lidt(addr: i32, mask: i32) {
     let size = return_on_pagefault!(safe_read16(addr));
     let offset = return_on_pagefault!(safe_read32s(addr + 2));
     *idtr_size = size;
-    *idtr_offset = offset & mask;
+    *idtr_offset = (offset & mask) as i64;
 }
 #[no_mangle]
 pub unsafe fn instr16_0F01_3_mem(addr: i32) { lidt(addr, 0xFFFFFF); }

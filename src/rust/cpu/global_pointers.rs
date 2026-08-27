@@ -63,6 +63,12 @@ pub const lstar: *mut i64 = 336 as *mut i64;
 pub const cstar: *mut i64 = 344 as *mut i64;
 pub const sfmask: *mut i64 = 352 as *mut i64;
 
+/// The descriptor table bases, 64 bits wide because a 64-bit kernel puts its idt and gdt in the
+/// high half of the address space. They moved here from 568 and 576, which are only 4-aligned; the
+/// limits beside them stay where they were, being 16-bit quantities either way.
+pub const idtr_offset: *mut i64 = 360 as *mut i64;
+pub const gdtr_offset: *mut i64 = 368 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;
@@ -70,9 +76,8 @@ pub const acpi_enabled: *mut bool = 552 as *mut bool;
 
 // (556 was instruction_pointer and 560 previous_ip, which moved to 272 to be 8-byte aligned)
 pub const idtr_size: *mut i32 = 564 as *mut i32;
-pub const idtr_offset: *mut i32 = 568 as *mut i32;
+// (568 was idtr_offset and 576 gdtr_offset, which moved to 360 to be 8-byte aligned)
 pub const gdtr_size: *mut i32 = 572 as *mut i32;
-pub const gdtr_offset: *mut i32 = 576 as *mut i32;
 pub const cr: *mut i32 = 580 as *mut i32;
 pub const cpl: *mut u8 = 612 as *mut u8;
 pub const in_hlt: *mut bool = 616 as *mut bool;

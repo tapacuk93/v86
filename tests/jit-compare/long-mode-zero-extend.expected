@@ -1,0 +1,9 @@
+; What long-mode-zero-extend.asm leaves behind. Each register was dirtied with a distinctive upper
+; half first, so a zero here means the instruction cleared it rather than merging into it.
+r8  = 0                    ; cpuid cleared the upper half of rbx
+r9  = 0                    ; and of rcx
+r10 = 0                    ; and of rdx
+r11 = 0                    ; rdtsc cleared the upper half of rax
+r12 = 0                    ; and of rdx
+r13 = 1234                 ; and rdmsr answered with the value alone
+r14 = 0

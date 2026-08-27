@@ -607,8 +607,8 @@ pub unsafe fn call_interrupt_vector_64(
         return;
     }
 
-    let address = return_on_pagefault!(translate_address_system_read(
-        *idtr_offset + (interrupt_nr << 4)
+    let address = return_on_pagefault!(translate_address_system_read64(
+        *idtr_offset + ((interrupt_nr as i64) << 4)
     ));
     let low = memory::read64s(address) as u64;
     let high = memory::read64s(address + 8) as u64;
@@ -1158,7 +1158,7 @@ pub unsafe fn call_interrupt_vector(
         }
 
         let descriptor_address = return_on_pagefault!(translate_address_system_read(
-            *idtr_offset + (interrupt_nr << 3)
+            *idtr_offset as i32 + (interrupt_nr << 3)
         ));
 
         let descriptor = InterruptDescriptor::of_u64(memory::read64s(descriptor_address) as u64);
@@ -2091,12 +2091,12 @@ pub unsafe fn do_task_switch(selector: i32, error_code: Option<i32>, source: Tas
                     panic!("#TS handler");
                 },
             };
-        safe_write64(tr_descriptor_address, tr_descriptor.clear_busy().raw).unwrap();
+        safe_write64(tr_descriptor_address as i32, tr_descriptor.clear_busy().raw).unwrap();
     }
 
     if source != TaskSwitchSource::Iret {
         // jump, call and int mark the new task as busy (iret would not)
-        safe_write64(descriptor_address, descriptor.set_busy().raw).unwrap();
+        safe_write64(descriptor_address as i32, descriptor.set_busy().raw).unwrap();
     }
 
     //let new_tsr_size = descriptor.effective_limit;
@@ -2351,6 +2351,15 @@ pub unsafe fn translate_address_system_read(address: i32) -> OrPageFault<u32> {
 }
 pub unsafe fn translate_address_system_write(address: i32) -> OrPageFault<u32> {
     translate_address(address, true, false, false, false, true)
+}
+
+/// The system variants at full width, for the descriptor tables a 64-bit kernel puts in the high
+/// half of the address space.
+pub unsafe fn translate_address_system_read64(address: i64) -> OrPageFault<u32> {
+    translate_address64(address, false, false, false, false, true)
+}
+pub unsafe fn translate_address_system_write64(address: i64) -> OrPageFault<u32> {
+    translate_address64(address, true, false, false, false, true)
 }
 
 pub unsafe fn translate_address_read64(address: i64) -> OrPageFault<u32> {
@@ -3109,17 +3118,19 @@ pub unsafe fn is_asize_32() -> bool {
 
 pub unsafe fn lookup_segment_selector(
     selector: SegmentSelector,
-) -> OrPageFault<Result<(SegmentDescriptor, i32), SelectorNullOrInvalid>> {
+) -> OrPageFault<Result<(SegmentDescriptor, i64), SelectorNullOrInvalid>> {
     if selector.is_null() {
         return Ok(Err(SelectorNullOrInvalid::IsNull));
     }
 
+    // The gdt base is 64 bits wide; the ldt base comes from a segment descriptor and is 32. The
+    // descriptor address that comes out of this is therefore 64 bits too.
     let (table_offset, table_limit) = if selector.is_gdt() {
-        (*gdtr_offset as u32, *gdtr_size as u32)
+        (*gdtr_offset, *gdtr_size as u32)
     }
     else {
         (
-            *segment_offsets.offset(LDTR as isize) as u32,
+            *segment_offsets.offset(LDTR as isize) as u32 as i64,
             *segment_limits.offset(LDTR as isize) as u32,
         )
     };
@@ -3135,9 +3146,9 @@ pub unsafe fn lookup_segment_selector(
         return Ok(Err(SelectorNullOrInvalid::OutsideOfTableLimit));
     }
 
-    let descriptor_address = selector.descriptor_offset() as i32 + table_offset as i32;
+    let descriptor_address = selector.descriptor_offset() as i64 + table_offset;
 
-    let descriptor = SegmentDescriptor::of_u64(memory::read64s(translate_address_system_read(
+    let descriptor = SegmentDescriptor::of_u64(memory::read64s(translate_address_system_read64(
         descriptor_address,
     )?) as u64);
 
@@ -3264,7 +3275,7 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
         descriptor = descriptor.set_accessed();
 
         memory::write8(
-            translate_address_system_write(descriptor_address + 5).unwrap(),
+            translate_address_system_write64(descriptor_address + 5).unwrap(),
             descriptor.access_byte() as i32,
         );
     }
@@ -3296,7 +3307,7 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
 /// it was read from.
 pub unsafe fn lookup_system_descriptor_64(
     selector: SegmentSelector,
-) -> OrPageFault<Result<(SegmentDescriptor, i64, i32), SelectorNullOrInvalid>> {
+) -> OrPageFault<Result<(SegmentDescriptor, i64, i64), SelectorNullOrInvalid>> {
     dbg_assert!(long_mode_active());
 
     if selector.is_null() {
@@ -3304,14 +3315,14 @@ pub unsafe fn lookup_system_descriptor_64(
     }
     // a system descriptor is always in the gdt
     let (table_offset, table_limit) = (*gdtr_offset, *gdtr_size);
-    let offset = table_offset + selector.descriptor_offset() as i32;
+    let offset = table_offset + selector.descriptor_offset() as i64;
 
     if selector.descriptor_offset() as i32 + 15 > table_limit {
         return Ok(Err(SelectorNullOrInvalid::OutsideOfTableLimit));
     }
 
-    let low = memory::read64s(translate_address_system_read(offset)?) as u64;
-    let high = memory::read64s(translate_address_system_read(offset + 8)?) as u64;
+    let low = memory::read64s(translate_address_system_read64(offset)?) as u64;
+    let high = memory::read64s(translate_address_system_read64(offset + 8)?) as u64;
 
     let descriptor = SegmentDescriptor::of_u64(low);
     let base = descriptor.base() as u32 as i64 | ((high & 0xFFFFFFFF) as i64) << 32;
@@ -3368,7 +3379,7 @@ pub unsafe fn load_tr(selector: i32) {
 
     // Mark task as busy
     memory::write8(
-        translate_address_system_write(descriptor_address + 5).unwrap(),
+        translate_address_system_write64(descriptor_address + 5).unwrap(),
         descriptor.set_busy().access_byte() as i32,
     );
 }

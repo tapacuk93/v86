@@ -1,0 +1,7 @@
+; What long-mode-high-gdt.asm leaves behind. The table it loads from is at 517 GiB, which the
+; truncating implementation could not name.
+r8  = 1234                 ; the descriptor was read through the high address
+r9  = 17                   ; and the limit round-tripped
+r10 = 8140000000           ; and the base, at full width
+r11 = fff                  ; the same for the idt's limit
+r12 = 8140000000           ; and its base

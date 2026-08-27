@@ -1155,6 +1155,21 @@ unsafe fn sse_move(
     }
 }
 
+/// Zero extend the results of an instruction delegated to its 32-bit implementation.
+///
+/// write_reg32 leaves the upper half of the register alone, which is right in 32-bit mode - there
+/// is no upper half to speak of - and wrong here: in 64-bit mode every 32-bit write clears it.
+/// cpuid, rdtsc and rdmsr all answer through eax and edx, so a stale upper half does not corrupt
+/// some corner of the result, it turns the whole answer into a much larger number.
+///
+/// Fixing write_reg32 itself would be the tidier change, but the jit writes 32-bit registers with
+/// its own generated stores and would not follow, and the differential fixtures compare the two.
+unsafe fn zero_extend_regs(regs: &[i32]) {
+    for &r in regs {
+        write_reg64(r, read_reg64(r) as u32 as i64);
+    }
+}
+
 /// An sse operation that reads a 128-bit source and acts on an xmm register, at a full 64-bit
 /// address. The same shape as the sse_66_source_op table, for the ones that are not in it.
 unsafe fn sse_source_op(modrm_byte: i32, op: unsafe fn(reg128, i32)) -> bool {
@@ -1382,7 +1397,7 @@ unsafe fn load_tr_64(selector: i32) -> bool {
     *sreg.offset(TR as isize) = selector as u16;
 
     // mark the task busy, as the 32-bit path does
-    match translate_address_system_write(address + 5) {
+    match translate_address_system_write64(address + 5) {
         Ok(a) => memory::write8(a, descriptor.set_busy().access_byte() as i32),
         Err(()) => {},
     }
@@ -3224,8 +3239,8 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 if safe_write16_64(addr, size).is_err() {
                     return true;
                 }
-                // the base is eight bytes here, and v86 only ever holds a 32-bit one
-                let _ = safe_write64_64(addr + 2, base as u32 as u64);
+                // the base is eight bytes here, and now so is what v86 holds
+                let _ = safe_write64_64(addr + 2, base as u64);
                 return true;
             }
 
@@ -3233,12 +3248,10 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 Ok(v) => v,
                 Err(()) => return true,
             };
+            // At full width: a 64-bit kernel builds its gdt and idt in the high half of the
+            // address space, so truncating the base here lost the tables entirely.
             let base = match safe_read64s_64(addr + 2) {
                 Ok(v) => v as i64,
-                Err(()) => return true,
-            };
-            let base = match truncate_address(base) {
-                Ok(b) => b,
                 Err(()) => return true,
             };
             if group == 2 {
@@ -3921,8 +3934,10 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         },
 
         // cpuid
+        // cpuid, which reports through all four
         0xA2 => {
             crate::cpu::instructions_0f::instr_0FA2();
+            zero_extend_regs(&[EAX, EBX, ECX, EDX]);
             true
         },
 
@@ -3943,12 +3958,15 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             crate::cpu::instructions_0f::instr_0F30();
             true
         },
+        // rdtsc and rdmsr, which report through edx:eax
         0x31 => {
             crate::cpu::instructions_0f::instr_0F31();
+            zero_extend_regs(&[EAX, EDX]);
             true
         },
         0x32 => {
             crate::cpu::instructions_0f::instr_0F32();
+            zero_extend_regs(&[EAX, EDX]);
             true
         },
         0x77 => {

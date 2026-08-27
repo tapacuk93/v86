@@ -102,13 +102,15 @@ export function CPU(bus, wm, stop_idling)
     this.protected_mode = view(Int32Array, memory, 800, 1);
 
     this.idtr_size = view(Int32Array, memory, 564, 1);
-    this.idtr_offset = view(Int32Array, memory, 568, 1);
+    // 64 bits wide, as a low and a high half: a 64-bit kernel puts its idt and gdt in the high
+    // half of the address space. See idtr_offset in global_pointers.rs.
+    this.idtr_offset = view(Int32Array, memory, 360, 2);
 
     /**
      * global descriptor table register
      */
     this.gdtr_size = view(Int32Array, memory, 572, 1);
-    this.gdtr_offset = view(Int32Array, memory, 576, 1);
+    this.gdtr_offset = view(Int32Array, memory, 368, 2);
 
     this.tss_size_32 = view(Int32Array, memory, 1128, 1);
 
@@ -529,9 +531,9 @@ CPU.prototype.get_state = function()
     state[2] = this.segment_offsets;
     state[3] = this.segment_limits;
     state[4] = this.protected_mode[0];
-    state[5] = this.idtr_offset[0];
+    state[5] = this.idtr_offset;
     state[6] = this.idtr_size[0];
-    state[7] = this.gdtr_offset[0];
+    state[7] = this.gdtr_offset;
     state[8] = this.gdtr_size[0];
     // 9 (formerly page_fault)
     state[10] = this.cr;
@@ -728,9 +730,9 @@ CPU.prototype.set_state = function(state)
     this.segment_limits.set(state[3]);
 
     this.protected_mode[0] = state[4];
-    this.idtr_offset[0] = state[5];
+    this.idtr_offset.set(state[5]);
     this.idtr_size[0] = state[6];
-    this.gdtr_offset[0] = state[7];
+    this.gdtr_offset.set(state[7]);
     this.gdtr_size[0] = state[8];
     this.cr.set(state[10]);
     this.cpl[0] = state[11];

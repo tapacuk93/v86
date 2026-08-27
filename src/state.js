@@ -2,7 +2,7 @@ import { h } from "./lib.js";
 import { dbg_assert, dbg_log } from "./log.js";
 import { CPU } from "./cpu.js";
 
-const STATE_VERSION = 7;
+const STATE_VERSION = 8;
 const STATE_MAGIC = 0x86768676|0;
 const STATE_INDEX_MAGIC = 0;
 const STATE_INDEX_VERSION = 1;
