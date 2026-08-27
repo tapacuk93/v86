@@ -1982,7 +1982,20 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            run_0f(opcode2, osize)
+            let handled = run_0f(opcode2, osize);
+            if !handled {
+                // Reported here rather than by the caller, which only knows about the escape and
+                // would say "opcode=0f" - true and useless. This is how a missing instruction gets
+                // named, and the run that reaches one is minutes long.
+                dbg_assert!(
+                    false,
+                    "Unimplemented 64-bit instruction: 0f {:02x} rex={:02x} eip={:x}",
+                    opcode2,
+                    *rex,
+                    *previous_ip
+                );
+            }
+            handled
         },
 
         // xchg rax, r, whose 0x90 case is nop.
@@ -3250,6 +3263,114 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     );
                     *dreg.offset(dr as isize) = value as i32;
                 }
+            }
+            true
+        },
+
+        // The sse shapes the 128-bit source table cannot carry: the stores, the ones with an
+        // immediate, and the ones whose destination is a general purpose register. Each is written
+        // out here rather than delegated, so that the memory operand is a full 64-bit address -
+        // the 32-bit implementations take an i32 one, which a kernel's addresses are nowhere near.
+        //
+        // pshufd, movq, movntdq and pmovmskb are what an sse2 memcpy, memset and string search are
+        // built out of, so a 64-bit guest reaches them almost immediately.
+        0x50 | 0x70 | 0xD6 | 0xD7 | 0xE7 => {
+            use crate::cpu::instructions_0f as i;
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
+            let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+            let has_f2 = 0 != *prefixes & crate::prefix::PREFIX_F2;
+            let r = modrm_reg(modrm_byte);
+
+            match opcode {
+                // movmskps and movmskpd, the sign bits of the lanes, into a general register
+                0x50 => {
+                    if modrm_byte < 0xC0 {
+                        dbg_log!("#ud movmskps with a memory operand");
+                        trigger_ud();
+                        return true;
+                    }
+                    let rm = modrm_rm(modrm_byte);
+                    if has_66 { i::instr_660F50_reg(rm, r) } else { i::instr_0F50_reg(rm, r) }
+                },
+
+                // pmovmskb, likewise, and likewise register only
+                0xD7 => {
+                    if modrm_byte < 0xC0 {
+                        dbg_log!("#ud pmovmskb with a memory operand");
+                        trigger_ud();
+                        return true;
+                    }
+                    write_reg_sized(r, i::instr_660FD7(modrm_rm(modrm_byte)) as u32 as i64, 32);
+                },
+
+                // pshufd, pshufhw and pshuflw, which carry an immediate after the modrm - so the
+                // address has to be resolved knowing that one byte still follows it
+                0x70 => {
+                    let source = if modrm_byte >= 0xC0 {
+                        read_xmm128s(modrm_rm(modrm_byte))
+                    }
+                    else {
+                        let addr = match resolve_modrm64_imm(modrm_byte, 1) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read128s_64(addr) {
+                            Ok(v) => v,
+                            Err(()) => return true,
+                        }
+                    };
+                    let imm = match read_imm8() {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    };
+                    if has_f3 {
+                        i::instr_F30F70(source, r, imm)
+                    }
+                    else if has_f2 {
+                        i::instr_F20F70(source, r, imm)
+                    }
+                    else if has_66 {
+                        i::instr_660F70(source, r, imm)
+                    }
+                    else {
+                        i::instr_0F70(source.u64[0], r, imm)
+                    }
+                },
+
+                // movq to xmm or to memory: eight bytes, not sixteen. Storing the whole register
+                // would write over whatever follows the destination.
+                0xD6 => {
+                    if modrm_byte >= 0xC0 {
+                        i::instr_660FD6_reg(modrm_rm(modrm_byte), r);
+                    }
+                    else {
+                        match resolve_modrm64(modrm_byte) {
+                            Ok(addr) => {
+                                let _ = safe_write64_64(addr, read_xmm64s(r));
+                            },
+                            Err(()) => {},
+                        }
+                    }
+                },
+
+                // movntdq, a 128-bit store that asks not to be cached; there is no cache here
+                _ => {
+                    if modrm_byte >= 0xC0 {
+                        dbg_log!("#ud movntdq with a register destination");
+                        trigger_ud();
+                        return true;
+                    }
+                    match resolve_modrm64(modrm_byte) {
+                        Ok(addr) => {
+                            let _ = safe_write128_64(addr, read_xmm128s(r));
+                        },
+                        Err(()) => {},
+                    }
+                },
             }
             true
         },

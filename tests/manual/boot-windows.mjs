@@ -117,32 +117,36 @@ function png(width, height, rgba)
 // costs no memory, which matters on a host with 8 GiB and a 1 GiB guest in it.
 //
 // This is only reasonable because it is node and the medium is read-only.
-function iso_buffer(path)
+// A class rather than an object literal, because v86's state serializer refuses anything whose
+// constructor is Object - see save_object in src/state.js. A plain literal works right up until
+// something tries to save the machine, which is exactly when it is least convenient to find out.
+class IsoBuffer
 {
-    const fd = fs.openSync(path, "r");
-    const byteLength = fs.fstatSync(fd).size;
-    return {
-        byteLength,
-        onload: undefined,
-        onprogress: undefined,
-        load() { this.onload && this.onload({}); },
-        get(start, len, fn) {
-            const block = Buffer.alloc(len);
-            fs.readSync(fd, block, 0, len, start);
-            fn(new Uint8Array(block.buffer, block.byteOffset, len));
-        },
-        set(start, slice, fn) { throw new Error("the install medium is read-only"); },
-        get_buffer(fn) { fn(); },
-        get_state() { return []; },
-        set_state(state) {},
-    };
+    constructor(path)
+    {
+        this.fd = fs.openSync(path, "r");
+        this.byteLength = fs.fstatSync(this.fd).size;
+        this.onload = undefined;
+        this.onprogress = undefined;
+    }
+    load() { this.onload && this.onload({}); }
+    get(start, len, fn)
+    {
+        const block = Buffer.alloc(len);
+        fs.readSync(this.fd, block, 0, len, start);
+        fn(new Uint8Array(block.buffer, block.byteOffset, len));
+    }
+    set(start, slice, fn) { throw new Error("the install medium is read-only"); }
+    get_buffer(fn) { fn(); }
+    get_state() { return []; }
+    set_state(state) {}
 }
 
 const emulator = new V86({
     wasm_path: __dirname + "../../build/v86-debug.wasm",
     bios: { url: __dirname + "../../bios/seabios.bin" },
     vga_bios: { url: __dirname + "../../bios/vgabios.bin" },
-    cdrom: iso_buffer(iso),
+    cdrom: new IsoBuffer(iso),
     memory_size: MEMORY,
     vga_memory_size: 32 * 1024 * 1024,
     // Windows x64 has no support for a machine without acpi, and drives its timer through the

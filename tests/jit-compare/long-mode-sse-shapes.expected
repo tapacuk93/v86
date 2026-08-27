@@ -1,0 +1,8 @@
+; What long-mode-sse-shapes.asm leaves behind.
+r8  = 1516171811121314     ; pshufd 0x1b reversed the dwords
+r9  = 102030405060708      ; movq wrote the low eight bytes
+r10 = eeeeeeeeeeeeeeee     ; and not the eight after them
+r11 = 1112131415161718     ; movntdq wrote all sixteen
+r12 = ffff                 ; pmovmskb, one bit per byte
+r13 = f                    ; movmskps, one per single
+r14 = 3                    ; movmskpd, one per double
