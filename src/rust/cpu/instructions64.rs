@@ -3429,6 +3429,8 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     }
                     let rm = modrm_rm(modrm_byte);
                     if has_66 { i::instr_660F50_reg(rm, r) } else { i::instr_0F50_reg(rm, r) }
+                    // Both write through write_reg32, which leaves the upper half alone.
+                    zero_extend_regs(&[r]);
                 },
 
                 // pmovmskb, likewise, and likewise register only

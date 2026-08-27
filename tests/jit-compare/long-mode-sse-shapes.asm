@@ -48,6 +48,12 @@ long_mode:
     mov [rdi], rax
     mov [rdi + 8], rax
     movdqa xmm2, [rdi]
+
+    ; dirtied first, so that a result merged into the upper half rather than zero extended into it
+    ; shows up here instead of passing by luck
+    mov r12, 0x1111111100000000
+    mov r13, 0x2222222200000000
+    mov r14, 0x3333333300000000
     pmovmskb r12d, xmm2                     ; -> ffff, sixteen sign bits
     movmskps r13d, xmm2                     ; -> f, four
     movmskpd r14d, xmm2                     ; -> 3, two
