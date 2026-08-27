@@ -1468,6 +1468,56 @@ pub unsafe fn run(opcode: i32) -> bool {
         // only a 0x66 prefix narrows them, so the check is against 16 rather than for 64. The
         // 16-bit form moves the stack pointer by two rather than eight, which needs its own narrow
         // push and pop, and nothing has asked for it.
+        // in and out, with the port either in an immediate byte or in dx. The operand is 8, 16 or
+        // 32 bits and never 64: rex.w means nothing here, so the width comes from the opcode and
+        // the 0x66 prefix alone.
+        //
+        // These were missing entirely, which a kernel does not survive - every legacy device, from
+        // the interrupt controller to the cmos to the disk, is reached this way.
+        0xE4 | 0xE5 | 0xE6 | 0xE7 | 0xEC | 0xED | 0xEE | 0xEF => {
+            let port = if opcode < 0xEC {
+                match read_imm8() {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            }
+            else {
+                read_reg16(EDX)
+            };
+
+            let is_out = opcode & 2 != 0;
+            let width = if opcode & 1 == 0 {
+                8
+            }
+            else if 0 != *prefixes & crate::prefix::PREFIX_66 {
+                16
+            }
+            else {
+                32
+            };
+
+            if !test_privileges_for_io(port, width / 8) {
+                return true;
+            }
+            if is_out {
+                match width {
+                    8 => io_port_write8(port, read_reg8(AL)),
+                    16 => io_port_write16(port, read_reg16(AX)),
+                    _ => io_port_write32(port, read_reg32(EAX)),
+                }
+            }
+            else {
+                // A 32-bit read zero extends into rax, like every other 32-bit write in 64-bit
+                // mode; the narrower ones leave the rest of the register alone.
+                match width {
+                    8 => write_reg8(AL, io_port_read8(port)),
+                    16 => write_reg16(AX, io_port_read16(port)),
+                    _ => write_reg_sized(EAX, io_port_read32(port) as u32 as i64, 32),
+                }
+            }
+            true
+        },
+
         // sahf and lahf, which move the low byte of the flags to and from ah. 64-bit mode keeps
         // both, conditional on the lahf_lm cpuid bit.
         0x9E => {

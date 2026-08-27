@@ -1,0 +1,6 @@
+; What long-mode-portio.asm leaves behind.
+r8  = a5                   ; written and read back through the pic's mask register
+r9  = ffffffffffffff5a     ; the same through dx, leaving the rest of rax untouched
+r10 = ffffffffffffffff     ; a 16-bit read of an unattached port, which answers all ones
+r11 = ffffffff             ; and a 32-bit one, which zero extends into rax
+r12 = 1                    ; the writes at all three widths ran without faulting
