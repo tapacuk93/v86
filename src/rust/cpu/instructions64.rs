@@ -3209,6 +3209,155 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
 
         // mov r64, crN and mov crN, r64. The operand is always 64 bits here, rex.w or not, and
         // rex.r selects cr8 rather than extending the register.
+        // mov to and from a debug register. Windows clears dr7 as it starts, so this is on the
+        // path of every boot, and the registers are 64 bits wide in long mode.
+        0x21 | 0x23 => {
+            if 0 != *cpl {
+                trigger_gp(0);
+                return true;
+            }
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let dr = (modrm_byte >> 3 & 7) | rex_bit(REX_R);
+            let reg = modrm_rm(modrm_byte);
+
+            if (dr == 4 || dr == 5) && 0 != *cr.offset(4) & CR4_DE {
+                dbg_log!("#ud mov dr{} with cr4.de set", dr);
+                trigger_ud();
+                return true;
+            }
+            // dr4 and dr5 alias dr6 and dr7 when cr4.de is clear
+            let dr = if dr == 4 || dr == 5 { dr + 2 } else { dr };
+
+            if opcode == 0x21 {
+                // v86 keeps 32 bits of each; the halves above them read as zero, which is what
+                // they are on a machine that has never had a breakpoint above 4 GiB set.
+                write_reg64(reg, *dreg.offset(dr as isize) as u32 as i64);
+            }
+            else {
+                let value = read_reg64(reg);
+                if dr == 6 || dr == 7 {
+                    // the reserved bits of dr6 and dr7 read back fixed
+                    *dreg.offset(dr as isize) =
+                        if dr == 6 { value as i32 | 0xFFFF0FF0u32 as i32 } else { value as i32 | 0x400 };
+                }
+                else {
+                    dbg_assert!(
+                        value as u64 >> 32 == 0,
+                        "Unsupported: breakpoint address above 4 GiB"
+                    );
+                    *dreg.offset(dr as isize) = value as i32;
+                }
+            }
+            true
+        },
+
+        // shld and shrd: shift one operand, filling from the other. 0xA4 and 0xAC take the count
+        // as an immediate, 0xA5 and 0xAD from cl.
+        0xA4 | 0xA5 | 0xAC | 0xAD => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let left = opcode < 0xAC; // shld shifts left, shrd right
+            let imm = opcode & 1 == 0;
+            let fill = read_reg64(modrm_reg(modrm_byte));
+            let (dst, addr) = match read_rm_keep_addr_imm(modrm_byte, osize, if imm { 1 } else { 0 })
+            {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let count = if imm {
+                match read_imm8() {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            }
+            else {
+                read_reg8(CL)
+            } & if osize == 64 { 63 } else { 31 };
+
+            if count == 0 {
+                // a count of zero leaves the destination and every flag alone
+                let _ = write_rm_keep_addr(modrm_byte, addr, dst, osize);
+                return true;
+            }
+
+            let width = osize as u32;
+            let d = dst as u64 & if width == 64 { !0 } else { (1u64 << width) - 1 };
+            let f = fill as u64 & if width == 64 { !0 } else { (1u64 << width) - 1 };
+            let n = count as u32;
+            let (result, carry) = if left {
+                (d << n | f >> (width - n), d >> (width - n) & 1)
+            }
+            else {
+                (d >> n | f << (width - n), d >> (n - 1) & 1)
+            };
+
+            let result = sized(result as i64, osize);
+            if write_rm_keep_addr(modrm_byte, addr, result, osize).is_err() {
+                return true;
+            }
+            set_flags64_logical(result);
+            if carry != 0 {
+                *flags |= FLAG_CARRY;
+            }
+            else {
+                *flags &= !FLAG_CARRY;
+            }
+            *flags_changed &= !FLAG_CARRY;
+            true
+        },
+
+        // push and pop of fs and gs, the two segments long mode keeps. The slot is eight bytes
+        // wide here whatever the operand size, since the stack in 64-bit mode always is.
+        0xA0 | 0xA1 | 0xA8 | 0xA9 => {
+            let seg = if opcode < 0xA8 { FS } else { GS };
+            if opcode & 1 == 0 {
+                let _ = push64(*sreg.offset(seg as isize) as i64);
+            }
+            else {
+                match pop64() {
+                    Ok(v) => {
+                        if !switch_seg(seg, v as i32 & 0xFFFF) {
+                            return true;
+                        }
+                    },
+                    Err(()) => {},
+                }
+            }
+            true
+        },
+
+        // movnti, a store that asks not to be cached. There is no cache here to bypass, so it is
+        // an ordinary store; windows uses it to fill large structures.
+        0xC3 => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            if modrm_byte >= 0xC0 {
+                dbg_log!("#ud movnti with a register destination");
+                trigger_ud();
+                return true;
+            }
+            let value = read_reg64(modrm_reg(modrm_byte));
+            match resolve_modrm64(modrm_byte) {
+                Ok(addr) => {
+                    let _ = if osize == 64 {
+                        safe_write64_64(addr, value as u64)
+                    }
+                    else {
+                        safe_write32_64(addr, value as i32)
+                    };
+                },
+                Err(()) => {},
+            }
+            true
+        },
+
         0x20 | 0x22 => {
             if 0 != *cpl {
                 trigger_gp(0);

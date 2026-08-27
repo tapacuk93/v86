@@ -1,0 +1,9 @@
+; What long-mode-shld-dr.asm leaves behind.
+r8  = 22334455667788aa     ; shld filled the vacated low bits from the top of the source
+r9  = 1111223344556677     ; shrd filled the vacated high bits from the bottom of it
+r10 = 123456789abcdef      ; movnti stored the whole register
+r11 = 223344aa             ; the 32-bit shld zero extends into the full register
+r12 = 400                  ; dr7 reads back with the bit that is always set
+r13 = 12345678             ; and a breakpoint register holds what it was given
+r14 = 10                   ; push fs put the selector on an eight byte slot
+r15 = 10                   ; and pop gs loaded one
