@@ -1,0 +1,9 @@
+; What long-mode-ring3-interrupt.asm leaves behind. Derived from the architecture rather than
+; measured: this is ring 0 setup, which the user space oracle the other fixtures use cannot run.
+r8  = 1                    ; the handler ran on the ring 0 code selector out of the gate
+r9  = 1                    ; on the stack rsp0 named, not the one cpl 3 was using
+r10 = 1                    ; the frame recorded the interrupted cs, rpl and all
+r12 = 1                    ; and the interrupted ss
+r13 = 1                    ; and the interrupted rsp, which long mode pushes either way
+r14 = 1                    ; an ist entry switched the stack again, to the one it named
+r15 = 1                    ; and iretq went back to cpl 3

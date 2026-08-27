@@ -641,31 +641,42 @@ pub unsafe fn call_interrupt_vector_64(
         return;
     }
 
-    if descriptor.ist() != 0 {
-        dbg_assert!(
-            false,
-            "Unimplemented: interrupt stack table, ist {} on vector {:x}",
-            descriptor.ist(),
-            interrupt_nr
-        );
-        return;
-    }
-
     let selector = descriptor.selector() as i32;
-    if selector & 3 != *cpl as i32 {
-        dbg_assert!(
-            false,
-            "Unimplemented: long mode interrupt {:x} with a privilege change, cs {:x} cpl {}",
+    let new_cpl = (selector & 3) as u8;
+    if new_cpl > *cpl {
+        dbg_log!(
+            "#gp interrupt {:x} to a less privileged cs {:x} from cpl {}",
             interrupt_nr,
             selector,
             *cpl
         );
+        trigger_gp(interrupt_nr << 3 | 2);
         return;
     }
 
-    // the frame is always these five, eight bytes each, and rsp is aligned to sixteen first
+    // Where the frame goes. Long mode drops the 32-bit rule that the stack only switches on a
+    // privilege change: an ist entry switches it whatever the privilege, which is how a kernel
+    // gives #df and nmi a stack it knows is good.
     let old_rsp = read_reg64(ESP);
-    let mut rsp = old_rsp & !0xF;
+    let old_ss = *sreg.offset(SS as isize) as i64;
+    let new_rsp = if descriptor.ist() != 0 {
+        match read_tss_stack64(TSS_IST_BASE + (descriptor.ist() as i32 - 1) * 8) {
+            Ok(v) => Some(v),
+            Err(()) => return,
+        }
+    }
+    else if new_cpl < *cpl {
+        match read_tss_stack64(TSS_RSP_BASE + new_cpl as i32 * 8) {
+            Ok(v) => Some(v),
+            Err(()) => return,
+        }
+    }
+    else {
+        None
+    };
+
+    // the frame is always these five, eight bytes each, and rsp is aligned to sixteen first
+    let mut rsp = new_rsp.unwrap_or(old_rsp) & !0xF;
 
     // At full width: a 64-bit kernel puts its stacks in the high half of the address space, so an
     // interrupt taken while one is loaded pushes to an address nowhere near the first 4 GiB. iret
@@ -677,7 +688,7 @@ pub unsafe fn call_interrupt_vector_64(
 
     let eflags = get_eflags();
     let result = (|| -> OrPageFault<()> {
-        push(&mut rsp, *sreg.offset(SS as isize) as i64)?;
+        push(&mut rsp, old_ss)?;
         push(&mut rsp, old_rsp)?;
         push(&mut rsp, eflags as i64)?;
         push(&mut rsp, *sreg.offset(CS as isize) as i64)?;
@@ -692,6 +703,18 @@ pub unsafe fn call_interrupt_vector_64(
     }
 
     write_reg64(ESP, rsp);
+
+    if new_cpl < *cpl {
+        // Long mode loads ss with a null selector on a privilege change: there is no stack
+        // descriptor to read, only the pointer that came out of the tss. The rpl still has to say
+        // which ring the frame belongs to, so that iret can put it back.
+        *segment_is_null.offset(SS as isize) = false;
+        *segment_limits.offset(SS as isize) = 0xFFFFFFFF;
+        *segment_offsets.offset(SS as isize) = 0;
+        *segment_access_bytes.offset(SS as isize) = 0x80 | (new_cpl << 5) | 0x10 | 0x02 | 0x01;
+        *sreg.offset(SS as isize) = new_cpl as u16;
+        *cpl = new_cpl;
+    }
 
     if !switch_seg_64_interrupt(selector) {
         return;
@@ -769,6 +792,25 @@ pub unsafe fn switch_cs_real_mode(selector: i32) {
     *segment_is_null.offset(CS as isize) = false;
     *segment_offsets.offset(CS as isize) = selector << 4;
     update_cs_size(false);
+}
+
+/// rsp0 in a 64-bit tss. rsp1 and rsp2 follow it, eight bytes apart, so this is indexed by ring.
+pub const TSS_RSP_BASE: i32 = 4;
+/// ist1 in a 64-bit tss; ist2 to ist7 follow, eight bytes apart.
+pub const TSS_IST_BASE: i32 = 0x24;
+
+/// One of the stack pointers a 64-bit tss holds - an rsp for a ring, or an ist entry.
+///
+/// Unlike the 32-bit tss, this carries no segment selectors: long mode has no stack descriptor to
+/// load, only the pointer, and ss is set to null with the right rpl instead.
+unsafe fn read_tss_stack64(offset: i32) -> OrPageFault<i64> {
+    if offset as u32 + 7 > *segment_limits.offset(TR as isize) {
+        dbg_log!("#ts: tss too small for offset {:x}", offset);
+        dbg_assert!(false, "Unimplemented: #ts for a tss that is too small");
+        return Err(());
+    }
+    let addr = translate_address_system_read(*segment_offsets.offset(TR as isize) + offset)?;
+    Ok(memory::read64s(addr))
 }
 
 unsafe fn get_tss_ss_esp(dpl: u8) -> OrPageFault<(i32, i32)> {

@@ -2106,6 +2106,34 @@ pub unsafe fn run(opcode: i32) -> bool {
             true
         },
 
+        // int3, int imm8 and int1. These reach call_interrupt_vector like any other interrupt;
+        // long mode changes what the vector does, not how it is asked for.
+        //
+        // into is not here: 64-bit mode drops it, and the opcode is invalid rather than a nop.
+        0xCC | 0xCD | 0xF1 => {
+            let vector = if opcode == 0xCD {
+                match read_imm8() {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            }
+            else if opcode == 0xCC {
+                3
+            }
+            else {
+                1
+            };
+            call_interrupt_vector(vector, true, None);
+            after_block_boundary();
+            true
+        },
+
+        0xCE => {
+            dbg_log!("#ud into in 64-bit mode");
+            trigger_ud();
+            true
+        },
+
         // iret. Pops rip, cs, rflags, rsp and ss, eight bytes each
         0xCF => {
             let rsp = read_reg64(ESP);
@@ -2118,13 +2146,37 @@ pub unsafe fn run(opcode: i32) -> bool {
                     Err(()) => return true,
                 };
 
-            if !switch_seg_64_code(cs as i32 & 0xFFFF) {
+            // The rpl of the popped cs is the ring being returned to. Long mode always pops ss
+            // and rsp, privilege change or not, which is why the frame carries them.
+            let new_cpl = (cs & 3) as u8;
+            if new_cpl < *cpl {
+                dbg_log!("#gp iret to more privilege, cs {:x} from cpl {}", cs, *cpl);
+                trigger_gp(0);
                 return true;
             }
+
+            let old_cpl = *cpl;
+            *cpl = new_cpl;
+            if !switch_seg_64_code(cs as i32 & 0xFFFF) {
+                *cpl = old_cpl;
+                return true;
+            }
+
+            if new_cpl != old_cpl {
+                // ss in long mode carries no descriptor worth loading, and may legitimately be
+                // null, so it goes back as a selector over flat hidden state.
+                *segment_is_null.offset(SS as isize) = false;
+                *segment_limits.offset(SS as isize) = 0xFFFFFFFF;
+                *segment_offsets.offset(SS as isize) = 0;
+                *segment_access_bytes.offset(SS as isize) =
+                    0x80 | (new_cpl << 5) | 0x10 | 0x02 | 0x01;
+            }
+            *sreg.offset(SS as isize) = ss as u16;
+
             *instruction_pointer = rip;
             update_eflags(rflags as i32);
             write_reg64(ESP, new_rsp);
-            *sreg.offset(SS as isize) = ss as u16;
+            update_state_flags();
             after_block_boundary();
             true
         },
