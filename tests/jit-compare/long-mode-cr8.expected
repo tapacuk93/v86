@@ -1,0 +1,5 @@
+; What long-mode-cr8.asm leaves behind.
+r8  = d                    ; cr8 holds a four bit priority class
+r9  = f                    ; the highest it takes, read back over a dirtied register
+r10 = 0
+r11 = 1                    ; and without rex.r the same opcode still names cr0

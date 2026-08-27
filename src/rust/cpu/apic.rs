@@ -598,6 +598,16 @@ fn highest_isr(apic: &mut Apic) -> Option<u8> {
 
 pub fn acknowledge_irq() -> Option<u8> { acknowledge_irq_internal(&mut get_apic()) }
 
+/// cr8 is the task priority register seen four bits wide: it holds the priority *class*, which is
+/// the top nibble of the apic's tpr. Windows on x64 maps irql straight onto it, so
+/// KeRaiseIrql and KeLowerIrql are writes to cr8 and nothing else.
+pub fn read_task_priority_class() -> u8 { (get_apic().tpr >> 4 & 0xF) as u8 }
+
+pub fn write_task_priority_class(value: u8) {
+    dbg_assert!(value < 16);
+    get_apic().tpr = (value as u32) << 4;
+}
+
 fn acknowledge_irq_internal(apic: &mut Apic) -> Option<u8> {
     let highest_irr = match highest_irr(apic) {
         None => return None,

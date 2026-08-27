@@ -3654,6 +3654,26 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             let creg = (modrm_byte >> 3 & 7) | rex_bit(REX_R);
             let reg = modrm_rm(modrm_byte);
 
+            // cr8 is the task priority register, which rex.r selects rather than extending the
+            // register field. It is four bits wide and is the top nibble of the apic's tpr, and
+            // windows on x64 maps irql straight onto it - KeRaiseIrql and KeLowerIrql are a write
+            // to cr8 and nothing else, so the kernel reaches this within its first instructions.
+            if creg == 8 {
+                if opcode == 0x20 {
+                    write_reg64(reg, crate::cpu::apic::read_task_priority_class() as i64);
+                }
+                else {
+                    let value = read_reg64(reg);
+                    if value as u64 > 15 {
+                        dbg_log!("#gp mov cr8 with a value above 15: {:x}", value);
+                        trigger_gp(0);
+                        return true;
+                    }
+                    crate::cpu::apic::write_task_priority_class(value as u8);
+                }
+                return true;
+            }
+
             if !matches!(creg, 0 | 2 | 3 | 4) {
                 dbg_log!("Unimplemented: 64-bit mov with cr{}", creg);
                 return false;
