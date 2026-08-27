@@ -27,6 +27,9 @@
 //                    is most of the cost of an experiment
 //   KEYS_AT=n,m,...  press a key at each of these times, in seconds. A guest polling int 16h is
 //                    waiting for one; whether pressing it changes anything says which guest it is
+//   KEYS_EVERY=n     press one every n seconds instead. Prefer this: a boot's phases move around
+//                    by minutes depending on what else the host is doing, and a key pressed in the
+//                    wrong phase is a wasted run rather than an obvious failure
 
 import fs from "node:fs";
 import zlib from "node:zlib";
@@ -64,6 +67,7 @@ const HOT_FROM = +process.env.HOT_FROM || 0;
 const SAVE_AT = +process.env.SAVE_AT || 0;
 const RESTORE = process.env.RESTORE || "";
 const KEYS_AT = (process.env.KEYS_AT || "").split(",").filter(Boolean).map(Number);
+const KEYS_EVERY = +process.env.KEYS_EVERY || 0;
 
 fs.mkdirSync(OUT, { recursive: true });
 const log_file = fs.createWriteStream(OUT + "/boot.log");
@@ -378,13 +382,14 @@ if(SAVE_AT)
     }, SAVE_AT * 1000);
 }
 
-for(const at of KEYS_AT)
+function press_enter()
 {
-    setTimeout(() => {
-        note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** pressing enter`);
-        emulator.keyboard_send_scancodes([0x1c, 0x9c]);
-    }, at * 1000);
+    note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** pressing enter`);
+    emulator.keyboard_send_scancodes([0x1c, 0x9c]);
 }
+
+for(const at of KEYS_AT) setTimeout(press_enter, at * 1000);
+if(KEYS_EVERY) setInterval(press_enter, KEYS_EVERY * 1000);
 
 setTimeout(() => {
     clearInterval(sampler);
