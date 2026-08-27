@@ -139,6 +139,10 @@ const emulator = new V86({
     cdrom: iso_buffer(iso),
     memory_size: MEMORY,
     vga_memory_size: 32 * 1024 * 1024,
+    // Windows x64 has no support for a machine without acpi, and drives its timer through the
+    // apic. handle_irqs only consults the apic when this is on, so with it off the guest's timer
+    // interrupt is never delivered and every timeout it counts against stalls forever.
+    acpi: true,
     autostart: true,
     disable_jit: +process.env.DISABLE_JIT || 0,
     log_level: +process.env.LOG_LEVEL || 0,
@@ -189,6 +193,7 @@ function state()
         is_64: cpu.is_64 ? cpu.is_64[0] : 0,
         cr0: cpu.cr[0] >>> 0,
         cr3: cpu.cr[3] >>> 0,
+        interrupts_enabled: (cpu.flags[0] & 0x200) !== 0,
         cr4: cpu.cr[4] >>> 0,
         efer: cpu.efer[0] >>> 0,
         in_hlt: cpu.in_hlt[0],
@@ -250,6 +255,7 @@ let last_counter = 0;
 let instructions = 0;
 
 const spaces = new Set();
+const modes = new Map();
 let last_tick = -1;
 let ticks_seen = 0;
 
@@ -262,9 +268,17 @@ function milestone(name)
 }
 
 const sampler = setInterval(() => {
+    // At a short sample interval the first tick can beat the emulator into existence.
+    if(!emulator.v86 || !emulator.v86.cpu) return;
     const s = state();
     const elapsed = (Date.now() - start) / 1000;
     if(elapsed >= HOT_FROM) hot.set(s.eip, (hot.get(s.eip) || 0) + 1);
+
+    // How often the guest is in each mode with interrupts open. A guest that never runs long mode
+    // with if set cannot be delivered a timer tick there, and every timeout it counts stalls.
+    const bucket = (s.is_64 ? "64-bit   " : s.cr0 & 1 ? "protected" : "real     ") +
+        (s.interrupts_enabled ? "  if=1" : "  if=0");
+    modes.set(bucket, (modes.get(bucket) || 0) + 1);
 
     const counter = emulator.v86.cpu.instruction_counter[0] >>> 0;
     instructions += (counter - last_counter) >>> 0;
@@ -294,7 +308,9 @@ const sampler = setInterval(() => {
     const tick = mem[0x46c] | mem[0x46d] << 8 | mem[0x46e] << 16 | mem[0x46f] << 24;
     if(tick !== last_tick)
     {
-        if(ticks_seen++ < 6 || ticks_seen % 200 === 0)
+        ticks_seen++;
+        if(process.env.TICKS) note(`[${elapsed.toFixed(1)}s] bda tick = ${tick}`);
+        else if(ticks_seen < 6 || ticks_seen % 200 === 0)
             note(`[${elapsed.toFixed(1)}s] bda tick = ${tick} (${ticks_seen} changes so far)`);
         last_tick = tick;
     }
@@ -311,6 +327,17 @@ const sampler = setInterval(() => {
 
 const shooter = setInterval(() => {
     const tag = String(++shots * (SHOT_MS / 1000)) + "s";
+    // Whose handler int 1a and int 16 reach. A bootloader that hooks them maintains its own tick
+    // from its own timer handler; if that handler never runs, the tick it returns never moves and
+    // every timeout counted against it stalls.
+    const mem = emulator.v86.cpu.mem8;
+    const vector = n => {
+        const off = mem[n * 4] | mem[n * 4 + 1] << 8;
+        const seg = mem[n * 4 + 2] | mem[n * 4 + 3] << 8;
+        return seg.toString(16).padStart(4, "0") + ":" + off.toString(16).padStart(4, "0");
+    };
+    note(`  ivt: int 1a -> ${vector(0x1a)}   int 16 -> ${vector(0x16)}   int 8 -> ${vector(8)}`);
+
     const seconds = (Date.now() - start) / 1000;
     note(`[${seconds.toFixed(1)}s] eip=${state().eip} ` +
          `(${(instructions / seconds / 1e6).toFixed(1)} million instructions/s)`);
@@ -337,6 +364,13 @@ setTimeout(() => {
     {
         note(`  ${(100 * n / total).toFixed(1).padStart(5)}%  ${n.toString().padStart(5)}  eip=${eip}`);
     }
+    const mode_total = [...modes.values()].reduce((a, b) => a + b, 0);
+    note("\n== where the samples were, and whether interrupts were open");
+    for(const [name, n] of [...modes].sort((a, b) => b[1] - a[1]))
+    {
+        note(`  ${(100 * n / mode_total).toFixed(1).padStart(5)}%  ${name}`);
+    }
+
     note("\n== resets: " + reboots);
     note("== bda tick count: " + last_tick + ", changed " + ticks_seen + " times");
     note("\n== milestones reached: " + (seen.size ? [...seen].join(", ") : "none"));
