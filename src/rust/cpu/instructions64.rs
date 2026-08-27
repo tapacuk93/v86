@@ -2388,6 +2388,14 @@ pub unsafe fn run(opcode: i32) -> bool {
             write_reg64(ESP, new_rsp);
             update_state_flags();
             after_block_boundary();
+
+            // The flags came off the stack, so this is one of the places the interrupt flag goes
+            // back on, and anything that arrived while the handler ran has to be let through here.
+            // Waiting for the main loop's next check instead loses it outright if the guest closes
+            // interrupts again before then - which is what a kernel does between handlers, and why
+            // the timer tick was arriving at a quarter of its rate. The 32-bit iret has always
+            // ended this way.
+            handle_irqs();
             true
         },
 
