@@ -242,7 +242,11 @@ pub const IA32_PAT: i32 = 0x277;
 pub const IA32_RTIT_CTL: i32 = 0x570;
 pub const MSR_PKG_C2_RESIDENCY: i32 = 0x60D;
 pub const IA32_EFER: i32 = 0xC0000080u32 as i32;
-pub const IA32_KERNEL_GS_BASE: i32 = 0xC0000101u32 as i32;
+pub const IA32_FS_BASE: i32 = 0xC0000100u32 as i32;
+pub const IA32_GS_BASE: i32 = 0xC0000101u32 as i32;
+/// The gs base that swapgs will bring into use. 0xC0000101 is the *active* gs base, which this was
+/// previously named after by mistake.
+pub const IA32_KERNEL_GS_BASE: i32 = 0xC0000102u32 as i32;
 pub const MSR_AMD64_LS_CFG: i32 = 0xC0011020u32 as i32;
 pub const MSR_AMD64_DE_CFG: i32 = 0xC0011029u32 as i32;
 
@@ -3105,6 +3109,11 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
                     // es, ds, fs, gs
                     *sreg.offset(reg as isize) = selector_raw as u16;
                     *segment_is_null.offset(reg as isize) = true;
+                    if reg == FS || reg == GS {
+                        // The hidden base goes with the descriptor, so a null selector zeroes it.
+                        // A kernel that wants a base here writes it through wrmsr afterwards.
+                        set_segment_base64(reg, 0);
+                    }
                     update_state_flags();
                     return true;
                 }
@@ -3190,6 +3199,12 @@ pub unsafe fn switch_seg(reg: i32, selector_raw: i32) -> bool {
     *segment_offsets.offset(reg as isize) = descriptor.base();
     *segment_access_bytes.offset(reg as isize) = descriptor.access_byte();
     *sreg.offset(reg as isize) = selector_raw as u16;
+
+    if reg == FS || reg == GS {
+        // The wide base tracks the descriptor's, sign extension and all - a descriptor only holds
+        // 32 bits of base, so this is always the low half of what 64-bit code will read.
+        set_segment_base64(reg, descriptor.base() as u32 as i64);
+    }
 
     update_state_flags();
 
@@ -3357,6 +3372,30 @@ pub unsafe fn get_seg(segment: i32) -> OrPageFault<i32> {
     return Ok(*segment_offsets.offset(segment as isize));
 }
 
+/// Set the fs or gs base, keeping the 32-bit mirror in `segment_offsets` in step.
+///
+/// `segment_offsets` is what compatibility mode, the 16- and 32-bit instruction tables and the jit
+/// all read, and it is an i32. A base that does not fit is truncated there rather than refused:
+/// only 64-bit code can produce one, and 64-bit code reads the wide field instead.
+pub unsafe fn set_segment_base64(segment: i32, base: i64) {
+    dbg_assert!(segment == FS || segment == GS);
+    *(if segment == FS { fs_base } else { gs_base }) = base;
+    *segment_offsets.offset(segment as isize) = base as i32;
+}
+
+/// The base 64-bit code adds to an effective address for `segment`.
+///
+/// Long mode ignores the descriptor base of cs, ds, es and ss - they read as zero however the
+/// descriptor is written - and keeps only fs and gs, which it widens to 64 bits. Unlike get_seg
+/// this never faults: the null and limit checks are not performed in 64-bit mode.
+pub unsafe fn get_segment_base64(segment: i32) -> i64 {
+    match segment {
+        FS => *fs_base,
+        GS => *gs_base,
+        _ => 0,
+    }
+}
+
 pub unsafe fn set_cr0(cr0: i32) {
     let old_cr0 = *cr;
 
@@ -3458,17 +3497,14 @@ pub unsafe fn update_cs_size(new_size: bool) {
 }
 
 /// Entering 64-bit mode changes how instructions decode: the 0x40-0x4F opcodes become rex
-/// prefixes, the default address size becomes 64 bits, and the register file gains r8-r15. Only
-/// the rex decoding exists so far, so run_instruction_64 traps on the instruction itself.
+/// prefixes, the default address size becomes 64 bits, and the register file gains r8-r15. This is
+/// where run_instruction starts using the separate 64-bit table in instructions64.
 pub unsafe fn set_cs_is_64(value: bool) {
     if *is_64 != value {
         *is_64 = value;
-        if value {
-            dbg_log!("Entered 64-bit mode: decoding 64-bit code is not implemented");
-        }
-        else {
-            dbg_log!("Left 64-bit mode");
-        }
+        // Not logged: a guest that thunks down to real mode for bios calls - which is what every
+        // 64-bit bootloader on a bios machine does - crosses this thousands of times a boot, and
+        // the log is the only view of what such a guest is doing.
     }
 }
 
@@ -5443,6 +5479,10 @@ pub unsafe fn reset_cpu() {
     *efer = 0;
     *is_64 = false;
     *rex = 0;
+
+    *fs_base = 0;
+    *gs_base = 0;
+    *gs_base_kernel = 0;
 
     *fpu_stack_empty = 0xFF;
     *fpu_stack_ptr = 0;

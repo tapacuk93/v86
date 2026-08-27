@@ -80,6 +80,13 @@ export function CPU(bus, wm, stop_idling)
 
     this.segment_is_null = view(Uint8Array, memory, 724, 8);
     this.segment_offsets = view(Int32Array, memory, 736, 8);
+
+    // The fs and gs bases, which long mode widens to 64 bits, and the kernel gs base that swapgs
+    // exchanges with the active one. Each is a low and a high half, as the register file is; the
+    // low half is mirrored into segment_offsets for everything that still reads a 32-bit base.
+    this.fs_base = view(Int32Array, memory, 304, 2);
+    this.gs_base = view(Int32Array, memory, 312, 2);
+    this.gs_base_kernel = view(Int32Array, memory, 320, 2);
     this.segment_limits = view(Uint32Array, memory, 768, 8);
     this.segment_access_bytes = view(Uint8Array, memory, 512, 8);
 
@@ -623,6 +630,9 @@ CPU.prototype.get_state = function()
     state[91] = this.devices.parallel1;
     state[92] = this.efer[0];
     state[93] = this.is_64[0];
+    state[94] = this.fs_base;
+    state[95] = this.gs_base;
+    state[96] = this.gs_base_kernel;
 
     return state;
 };
@@ -795,6 +805,9 @@ CPU.prototype.set_state = function(state)
     this.devices.parallel1 && state[91] && this.devices.parallel1.set_state(state[91]);
     this.efer[0] = state[92] || 0;
     this.is_64[0] = state[93] || 0;
+    state[94] && this.fs_base.set(state[94]);
+    state[95] && this.gs_base.set(state[95]);
+    state[96] && this.gs_base_kernel.set(state[96]);
 
     this.fw_value = state[62];
 

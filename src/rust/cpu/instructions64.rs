@@ -82,14 +82,23 @@ unsafe fn resolve_modrm64(modrm_byte: i32) -> OrPageFault<i64> {
 /// Only rip relative addressing cares: it counts from the end of the whole instruction, and the
 /// immediate has not been read yet at the point the modrm is resolved.
 unsafe fn resolve_modrm64_imm(modrm_byte: i32, imm_bytes: i32) -> OrPageFault<i64> {
-    resolve_modrm64_address_imm(modrm_byte, imm_bytes)
+    Ok(seg_base64() + resolve_modrm64_address_imm(modrm_byte, imm_bytes)?)
 }
+
+/// The segment base a memory operand in 64-bit mode is relative to.
+///
+/// Only an fs or gs prefix contributes anything: long mode reads every other segment's base as
+/// zero, and the decoder does not record the cs, ds, es and ss prefixes at all. Windows reaches its
+/// per-cpu block through gs, so this is not a corner - it is on the path of nearly every kernel
+/// entry.
+unsafe fn seg_base64() -> i64 { get_segment_base64(segment_prefix(DS)) }
 
 /// The effective address a modrm byte describes, without checking whether v86 can reach it.
 ///
 /// lea wants this: it computes an address and puts it in a register without touching memory, so
-/// neither the 4 GiB limit nor a fault applies to it. Everything that does access memory goes
-/// through resolve_modrm64, which checks.
+/// neither the 4 GiB limit nor a fault applies to it, and no segment base is added - lea ignores a
+/// segment prefix. Everything that does access memory goes through resolve_modrm64, which both
+/// checks and adds the base.
 unsafe fn resolve_modrm64_address(modrm_byte: i32) -> OrPageFault<i64> {
     resolve_modrm64_address_imm(modrm_byte, 0)
 }
@@ -742,8 +751,10 @@ fn sse_66_source_op(opcode: i32) -> Option<unsafe fn(reg128, i32)> {
 /// The string instructions - movs, cmps, stos, lods and scas - in 64-bit mode.
 ///
 /// Much simpler than their 16- and 32-bit forms, which is why they are here rather than delegated:
-/// the address size is 64 rather than 16 or 32, and every segment base is zero, so rsi and rdi are
-/// the addresses. Direction still comes from df, and the rep prefixes still count rcx down.
+/// the address size is 64 rather than 16 or 32, and the destination segment is es, whose base long
+/// mode reads as zero, so rdi is the address. The source is ds by default and so is zero too, but
+/// it takes a segment prefix and an fs or gs one does carry a base. Direction still comes from df,
+/// and the rep prefixes still count rcx down.
 ///
 /// Both addresses are at full width, which matters because windows clears kernel structures with
 /// `rep stos` through addresses well above 4 GiB.
@@ -762,6 +773,8 @@ unsafe fn string_op(opcode: i32, osize: i32) -> bool {
     // only cmps and scas consult zf to decide whether to keep going; for the rest any rep is
     // simply a count
     let compares = matches!(opcode, 0xA6 | 0xA7 | 0xAE | 0xAF);
+    // The rsi side only; the rdi side is es, which cannot be overridden and has no base here.
+    let src_base = seg_base64();
 
     unsafe fn read_at(addr: i64, width: i32) -> OrPageFault<i64> {
         Ok(match width {
@@ -792,14 +805,14 @@ unsafe fn string_op(opcode: i32, osize: i32) -> bool {
             match opcode {
                 // movs
                 0xA4 | 0xA5 => {
-                    let v = read_at(rsi, width)?;
+                    let v = read_at(src_base + rsi, width)?;
                     write_at(rdi, v, width)?;
                     write_reg64(ESI, rsi + step);
                     write_reg64(EDI, rdi + step);
                 },
                 // cmps, which subtracts the destination from the source
                 0xA6 | 0xA7 => {
-                    let a = sized(read_at(rsi, width)?, width);
+                    let a = sized(read_at(src_base + rsi, width)?, width);
                     let b = sized(read_at(rdi, width)?, width);
                     set_flags64(a, b, sized(a.wrapping_sub(b), width), true);
                     write_reg64(ESI, rsi + step);
@@ -812,7 +825,7 @@ unsafe fn string_op(opcode: i32, osize: i32) -> bool {
                 },
                 // lods
                 0xAC | 0xAD => {
-                    let v = read_at(rsi, width)?;
+                    let v = read_at(src_base + rsi, width)?;
                     write_reg_sized(EAX, v, width);
                     write_reg64(ESI, rsi + step);
                 },
@@ -1831,7 +1844,7 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(v) => v as u32 as i64,
                 Err(()) => return true,
             };
-            let addr = high << 32 | low;
+            let addr = seg_base64() + (high << 32 | low);
 
             match opcode {
                 0xA0 => match safe_read8_64(addr) {
@@ -2736,6 +2749,21 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     Ok(addr) => invlpg64(addr),
                     Err(()) => {},
                 }
+                return true;
+            }
+
+            // /7 with a register operand and rm=0 is swapgs, which exchanges the active gs base
+            // with the one held in IA32_KERNEL_GS_BASE. It exists so that a kernel entered from
+            // user mode can reach its per-cpu block in one instruction, and windows uses it on
+            // every interrupt and system call.
+            if modrm_byte == 0xF8 {
+                if 0 != *cpl {
+                    trigger_gp(0);
+                    return true;
+                }
+                let active = *gs_base;
+                set_segment_base64(GS, *gs_base_kernel);
+                *gs_base_kernel = active;
                 return true;
             }
 

@@ -249,6 +249,15 @@ debug-with-profiler-and-long-mode: $(RUST_FILES) build/softfloat.o build/zstddec
 	cargo rustc --features profiler,long_mode $(CARGO_FLAGS)
 	cp build/wasm32-unknown-unknown/debug/v86.wasm build/v86-debug.wasm || true
 
+# The release build of the same, which is what a page serving a 64-bit guest needs: the debug
+# build is several times slower, and windows spends minutes in its bootloader as it is.
+release-with-long-mode: $(RUST_FILES) build/softfloat.o build/zstddeclib.o Cargo.toml
+	mkdir -p build/
+	cargo rustc --release --features long_mode $(CARGO_FLAGS)
+	cp build/wasm32-unknown-unknown/release/v86.wasm build/v86.wasm
+	-$(WASM_OPT) && wasm-opt -O2 --strip-debug build/v86.wasm -o build/v86.wasm
+	BLOCK_SIZE=K ls -l build/v86.wasm
+
 watch:
 	cargo watch -x 'rustc $(CARGO_FLAGS)' -s 'cp build/wasm32-unknown-unknown/debug/v86.wasm build/v86-debug.wasm'
 

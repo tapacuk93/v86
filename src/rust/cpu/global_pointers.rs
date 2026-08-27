@@ -41,6 +41,19 @@ pub const last_virt_eip: *mut i64 = 288 as *mut i64;
 /// physical address of eip without a second subtraction.
 pub const eip_phys: *mut i64 = 296 as *mut i64;
 
+/// The fs and gs bases, which long mode widens to 64 bits while every other segment base stays
+/// what the descriptor holds. `segment_offsets` cannot carry these: it is an i32 array shared with
+/// the jit and the 16- and 32-bit tables, and a base above 4 GiB has nowhere to go in it. The low
+/// half is mirrored there anyway, so that compatibility mode and generated code keep working.
+///
+/// Written by wrmsr on IA32_FS_BASE and IA32_GS_BASE, by loading a selector into fs or gs, and by
+/// swapgs for the gs pair.
+pub const fs_base: *mut i64 = 304 as *mut i64;
+pub const gs_base: *mut i64 = 312 as *mut i64;
+/// IA32_KERNEL_GS_BASE, the half of the gs pair that is not in use. swapgs exchanges it with
+/// `gs_base`, which is the whole of how a kernel reaches its per-cpu block on a syscall.
+pub const gs_base_kernel: *mut i64 = 320 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;
