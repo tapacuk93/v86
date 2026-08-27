@@ -1066,26 +1066,113 @@ unsafe fn shift_op(op: i32, value: i64, raw_count: i32, osize: i32) -> Option<i6
     Some(result)
 }
 
-/// An sse instruction whose behaviour is identical in 64-bit mode, delegated to its existing
-/// implementation. rex.r and rex.b extend the register fields to xmm8-15.
-unsafe fn sse_delegate(
+/// The memory side of an sse move, at a full 64-bit address.
+///
+/// The 32-bit implementations take an i32 address and refuse anything above 4 GiB. That was
+/// survivable while only a bootloader ran 64-bit code, but a kernel keeps its stack and its
+/// structures in the high half of the address space - movdqa [rsp+8] alone would be enough - so
+/// the moves do their own memory access here.
+///
+/// `bits` is how much memory is touched. `high_half` picks the upper half of the register for the
+/// 64-bit forms that use it, and `zero_rest` is the difference between a load that clears what it
+/// does not write and one that merges into what is there.
+unsafe fn sse_mem_move(
     modrm_byte: i32,
-    reg_fn: unsafe fn(i32, i32),
-    mem_fn: unsafe fn(i32, i32),
+    bits: i32,
+    high_half: bool,
+    to_memory: bool,
+    zero_rest: bool,
 ) -> bool {
     let r = modrm_reg(modrm_byte);
-    if modrm_byte >= 0xC0 {
-        reg_fn(modrm_rm(modrm_byte), r);
+    let addr = match resolve_modrm64(modrm_byte) {
+        Ok(a) => a,
+        Err(()) => return true,
+    };
+
+    if to_memory {
+        let v = read_xmm128s(r);
+        let _ = match (bits, high_half) {
+            (128, _) => safe_write128_64(addr, v),
+            (64, false) => safe_write64_64(addr, v.u64[0]),
+            (64, true) => safe_write64_64(addr, v.u64[1]),
+            _ => safe_write32_64(addr, v.u32[0] as i32),
+        };
+        return true;
     }
-    else {
-        match resolve_modrm64(modrm_byte) {
-            Ok(addr) => match truncate_address(addr) {
-                Ok(addr) => mem_fn(addr, r),
-                Err(()) => {},
+
+    match bits {
+        128 => match safe_read128s_64(addr) {
+            Ok(v) => write_xmm128_2(r, v.u64[0], v.u64[1]),
+            Err(()) => {},
+        },
+        64 => match safe_read64s_64(addr) {
+            Ok(v) => {
+                let old = read_xmm128s(r);
+                if high_half {
+                    write_xmm128_2(r, old.u64[0], v)
+                }
+                else if zero_rest {
+                    write_xmm128_2(r, v, 0)
+                }
+                else {
+                    write_xmm128_2(r, v, old.u64[1])
+                }
             },
             Err(()) => {},
-        }
+        },
+        _ => match safe_read32s_64(addr) {
+            Ok(v) => {
+                if zero_rest {
+                    write_xmm128(r, v, 0, 0, 0)
+                }
+                else {
+                    let old = read_xmm128s(r);
+                    write_xmm128(r, v, old.u32[1] as i32, old.u32[2] as i32, old.u32[3] as i32)
+                }
+            },
+            Err(()) => {},
+        },
     }
+    true
+}
+
+/// An sse move: the register form as the existing implementation has it, the memory form at a full
+/// 64-bit address. See sse_mem_move for what the last three arguments mean.
+unsafe fn sse_move(
+    modrm_byte: i32,
+    reg_fn: unsafe fn(i32, i32),
+    bits: i32,
+    high_half: bool,
+    to_memory: bool,
+    zero_rest: bool,
+) -> bool {
+    if modrm_byte >= 0xC0 {
+        reg_fn(modrm_rm(modrm_byte), modrm_reg(modrm_byte));
+        true
+    }
+    else {
+        sse_mem_move(modrm_byte, bits, high_half, to_memory, zero_rest)
+    }
+}
+
+/// An sse operation that reads a 128-bit source and acts on an xmm register, at a full 64-bit
+/// address. The same shape as the sse_66_source_op table, for the ones that are not in it.
+unsafe fn sse_source_op(modrm_byte: i32, op: unsafe fn(reg128, i32)) -> bool {
+    let r = modrm_reg(modrm_byte);
+    let source = if modrm_byte >= 0xC0 {
+        read_xmm128s(modrm_rm(modrm_byte))
+    }
+    else {
+        let addr = match resolve_modrm64(modrm_byte) {
+            Ok(a) => a,
+            Err(()) => return true,
+        };
+        match safe_read128s_64(addr) {
+            Ok(v) => v,
+            Err(()) => return true,
+        }
+    };
+    op(source, r);
     true
 }
 
@@ -2802,19 +2889,19 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
 
             match (opcode, has_66, has_f3) {
                 (0x16, false, false) => {
-                    sse_delegate(modrm_byte, i0f::instr_0F16_reg, i0f::instr_0F16_mem)
+                    sse_move(modrm_byte, i0f::instr_0F16_reg, 64, true, false, false)
                 },
                 (0x16, true, false) => {
-                    sse_delegate(modrm_byte, i0f::instr_660F16_reg, i0f::instr_660F16_mem)
+                    sse_move(modrm_byte, i0f::instr_660F16_reg, 64, true, false, false)
                 },
                 (0x17, false, false) => {
-                    sse_delegate(modrm_byte, i0f::instr_0F17_reg, i0f::instr_0F17_mem)
+                    sse_move(modrm_byte, i0f::instr_0F17_reg, 64, true, true, false)
                 },
                 (0x17, true, false) => {
-                    sse_delegate(modrm_byte, i0f::instr_660F17_reg, i0f::instr_660F17_mem)
+                    sse_move(modrm_byte, i0f::instr_660F17_reg, 64, true, true, false)
                 },
                 (0x7E, false, true) => {
-                    sse_delegate(modrm_byte, i0f::instr_F30F7E_reg, i0f::instr_F30F7E_mem)
+                    sse_move(modrm_byte, i0f::instr_F30F7E_reg, 64, false, false, true)
                 },
                 // movd/movq xmm, r/m: the rest of the register is cleared either way
                 (0x6E, true, false) => {
@@ -2984,10 +3071,10 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
 
             if has_f3 {
                 return match opcode {
-                    0x10 => sse_delegate(modrm_byte, i0f::instr_F30F10_reg, i0f::instr_F30F10_mem),
-                    0x11 => sse_delegate(modrm_byte, i0f::instr_F30F11_reg, i0f::instr_F30F11_mem),
-                    0x6F => sse_delegate(modrm_byte, i0f::instr_F30F6F_reg, i0f::instr_F30F6F_mem),
-                    0x7F => sse_delegate(modrm_byte, i0f::instr_F30F7F_reg, i0f::instr_F30F7F_mem),
+                    0x10 => sse_move(modrm_byte, i0f::instr_F30F10_reg, 32, false, false, true),
+                    0x11 => sse_move(modrm_byte, i0f::instr_F30F11_reg, 32, false, true, false),
+                    0x6F => sse_move(modrm_byte, i0f::instr_F30F6F_reg, 128, false, false, false),
+                    0x7F => sse_move(modrm_byte, i0f::instr_F30F7F_reg, 128, false, true, false),
                     _ => {
                         dbg_log!("Unimplemented 64-bit sse f3 {:02x}", opcode);
                         false
@@ -3000,8 +3087,8 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             // implementation here yet, and says so rather than running the packed form beside it.
             if has_f2 {
                 return match opcode {
-                    0x10 => sse_delegate(modrm_byte, i0f::instr_F20F10_reg, i0f::instr_F20F10_mem),
-                    0x11 => sse_delegate(modrm_byte, i0f::instr_F20F11_reg, i0f::instr_F20F11_mem),
+                    0x10 => sse_move(modrm_byte, i0f::instr_F20F10_reg, 64, false, false, true),
+                    0x11 => sse_move(modrm_byte, i0f::instr_F20F11_reg, 64, false, true, false),
                     _ => {
                         dbg_log!("Unimplemented 64-bit sse f2 {:02x}", opcode);
                         false
@@ -3009,19 +3096,19 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 };
             }
             match (opcode, has_66) {
-                (0x10, false) => sse_delegate(modrm_byte, i0f::instr_0F10_reg, i0f::instr_0F10_mem),
-                (0x11, false) => sse_delegate(modrm_byte, i0f::instr_0F11_reg, i0f::instr_0F11_mem),
-                (0x28, false) => sse_delegate(modrm_byte, i0f::instr_0F28_reg, i0f::instr_0F28_mem),
-                (0x29, false) => sse_delegate(modrm_byte, i0f::instr_0F29_reg, i0f::instr_0F29_mem),
-                (0x57, false) => sse_delegate(modrm_byte, i0f::instr_0F57_reg, i0f::instr_0F57_mem),
+                (0x10, false) => sse_move(modrm_byte, i0f::instr_0F10_reg, 128, false, false, false),
+                (0x11, false) => sse_move(modrm_byte, i0f::instr_0F11_reg, 128, false, true, false),
+                (0x28, false) => sse_move(modrm_byte, i0f::instr_0F28_reg, 128, false, false, false),
+                (0x29, false) => sse_move(modrm_byte, i0f::instr_0F29_reg, 128, false, true, false),
+                (0x57, false) => sse_source_op(modrm_byte, i0f::instr_0F57),
                 (0x6F, true) => {
-                    sse_delegate(modrm_byte, i0f::instr_660F6F_reg, i0f::instr_660F6F_mem)
+                    sse_move(modrm_byte, i0f::instr_660F6F_reg, 128, false, false, false)
                 },
                 (0x7F, true) => {
-                    sse_delegate(modrm_byte, i0f::instr_660F7F_reg, i0f::instr_660F7F_mem)
+                    sse_move(modrm_byte, i0f::instr_660F7F_reg, 128, false, true, false)
                 },
                 (0xEF, true) => {
-                    sse_delegate(modrm_byte, i0f::instr_660FEF_reg, i0f::instr_660FEF_mem)
+                    sse_source_op(modrm_byte, i0f::instr_660FEF)
                 },
                 _ => {
                     dbg_log!("Unimplemented 64-bit sse {:02x} 66={}", opcode, has_66);
@@ -3191,17 +3278,18 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
-        // bit test group with the index in a register. With a memory operand the index is signed
-        // and can reach outside the operand, which is not implemented; the register form is.
+        // bit test group with the index in a register.
+        //
+        // The memory form is a different instruction in all but name. Its index is a signed
+        // integer indexing a bit array that begins at the operand, so it reaches outside the
+        // operand in either direction, and what is accessed is the byte the index lands in rather
+        // than the operand itself. Windows uses it on bitmaps far larger than a register - which
+        // is why this is on the path of a boot rather than a curiosity.
         0xA3 | 0xAB | 0xB3 | 0xBB => {
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
                 Err(()) => return true,
             };
-            if modrm_byte < 0xC0 {
-                dbg_log!("Unimplemented: 64-bit bit test on memory with a register index");
-                return false;
-            }
             // the operation sits where the reg field would be for the immediate form
             let op = match opcode {
                 0xA3 => 4,
@@ -3209,13 +3297,46 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 0xB3 => 6,
                 _ => 7,
             };
-            let bit = read_reg64(modrm_reg(modrm_byte)) as i32;
-            let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+
+            if modrm_byte >= 0xC0 {
+                // the register form takes the index modulo the operand size
+                let bit = read_reg64(modrm_reg(modrm_byte)) as i32;
+                let (value, addr) = match read_rm_keep_addr(modrm_byte, osize) {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                };
+                if let Some(result) = bit_test_op(op, value, bit, osize) {
+                    let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
+                }
+                return true;
+            }
+
+            // Sign extended to the operand size: a 32-bit index is a signed 32-bit displacement
+            // into the array, not the low half of a 64-bit one.
+            let index = sized(read_reg64(modrm_reg(modrm_byte)), osize);
+            let base = match resolve_modrm64(modrm_byte) {
+                Ok(a) => a,
+                Err(()) => return true,
+            };
+            // An arithmetic shift, so a negative index rounds towards the lower address, and the
+            // remainder stays in 0..8 - which is what picks the bit within that byte.
+            let addr = base + (index >> 3);
+            let mask = 1 << (index & 7);
+
+            let byte = match safe_read8_64(addr) {
                 Ok(v) => v,
                 Err(()) => return true,
             };
-            if let Some(result) = bit_test_op(op, value, bit, osize) {
-                let _ = write_rm_keep_addr(modrm_byte, addr, result, osize);
+            *flags_changed &= !FLAG_CARRY;
+            *flags = *flags & !FLAG_CARRY | if 0 != byte & mask { FLAG_CARRY } else { 0 };
+
+            if op != 4 {
+                let new = match op {
+                    5 => byte | mask,
+                    6 => byte & !mask,
+                    _ => byte ^ mask,
+                };
+                let _ = safe_write8_64(addr, new);
             }
             true
         },

@@ -1,0 +1,10 @@
+; What long-mode-sse-high-va.asm leaves behind. Every access below goes through a virtual address
+; above 4 GiB, which the delegating path could not name at all.
+r8  = 102030405060708      ; movdqa stored the low eight bytes
+r9  = 1112131415161718     ; and the high eight
+r10 = 102030405060708      ; movdqu loaded them back
+r11 = 102030405060708      ; movq stored eight bytes
+r12 = eeeeeeeeeeeeeeee     ; and left the eight after them alone
+r13 = 1112131415161718     ; movhps stored the upper half
+r14 = eeeeeeee05060708     ; movss reached exactly four bytes
+r15 = 0                    ; pxor read its source through the high address

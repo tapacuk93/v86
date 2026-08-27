@@ -1,0 +1,10 @@
+; What long-mode-bt-mem.asm leaves behind. Every index below is used against memory, where the
+; index is signed and indexes a bit array rather than being taken modulo the operand size.
+r8  = 1                    ; bit 8 was set
+r9  = 0                    ; bit 9 was not
+r10 = 1                    ; bit 71, well past the eight bytes at the operand
+r11 = 1                    ; bit -7, below it
+r12 = 0                    ; bts reported the bit as it was
+r13 = 1                    ; and set it
+r14 = 0                    ; btr cleared one
+r15 = 0                    ; btc flipped one off
