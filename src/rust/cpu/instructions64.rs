@@ -3545,13 +3545,16 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 read_reg8(CL)
             } & if osize == 64 { 63 } else { 31 };
 
-            if count == 0 {
-                // a count of zero leaves the destination and every flag alone
+            let width = osize as u32;
+            // A count of zero leaves the destination and every flag alone. A count at or beyond
+            // the operand size is architecturally undefined - the mask is 31 even at an operand
+            // size of 16 - and is left alone too, rather than being allowed to underflow the
+            // shift amounts below and panic the emulator on a guest's undefined behaviour.
+            if count == 0 || count as u32 >= width {
                 let _ = write_rm_keep_addr(modrm_byte, addr, dst, osize);
                 return true;
             }
 
-            let width = osize as u32;
             let d = dst as u64 & if width == 64 { !0 } else { (1u64 << width) - 1 };
             let f = fill as u64 & if width == 64 { !0 } else { (1u64 << width) - 1 };
             let n = count as u32;

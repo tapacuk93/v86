@@ -1,0 +1,6 @@
+; What long-mode-shld-edges.asm leaves behind.
+r8  = ffffffffffff1234     ; a count past the operand size left the destination alone
+r9  = 7fffffffffffffff     ; the largest defined count at 64 bits
+r10 = 0                    ; the bit shifted out of the destination was clear
+r11 = 1122334455667788     ; a count of zero changes nothing
+r12 = 1                    ; and leaves carry as it found it
