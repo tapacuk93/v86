@@ -21,6 +21,10 @@
 //   DISABLE_JIT=1    interpret everything, for telling a codegen bug from an interpreter one
 //   HOT_FROM=n       ignore the first n seconds in the hot-address report, so that a phase late in
 //                    the boot is not drowned out by the phases that worked
+//   SAVE_AT=n        write the whole machine to OUT/state.bin after n seconds
+//   RESTORE=path     start from a state written that way instead of booting. The frontier of this
+//                    work is several minutes into a boot, and re-reaching it for every experiment
+//                    is most of the cost of an experiment
 //   KEYS_AT=n,m,...  press a key at each of these times, in seconds. A guest polling int 16h is
 //                    waiting for one; whether pressing it changes anything says which guest it is
 
@@ -57,6 +61,8 @@ const MEMORY = (+process.env.MEMORY || 1024) * 1024 * 1024;
 const SAMPLE_MS = +process.env.SAMPLE_MS || 250;
 const SHOT_MS = +process.env.SHOT_MS || 5000;
 const HOT_FROM = +process.env.HOT_FROM || 0;
+const SAVE_AT = +process.env.SAVE_AT || 0;
+const RESTORE = process.env.RESTORE || "";
 const KEYS_AT = (process.env.KEYS_AT || "").split(",").filter(Boolean).map(Number);
 
 fs.mkdirSync(OUT, { recursive: true });
@@ -143,7 +149,8 @@ const emulator = new V86({
     // apic. handle_irqs only consults the apic when this is on, so with it off the guest's timer
     // interrupt is never delivered and every timeout it counts against stalls forever.
     acpi: true,
-    autostart: true,
+    // A restore replaces the state a boot would have built, so there is nothing to start yet.
+    autostart: !RESTORE,
     disable_jit: +process.env.DISABLE_JIT || 0,
     log_level: +process.env.LOG_LEVEL || 0,
     screen_dummy: true,
@@ -153,8 +160,18 @@ process.on("unhandledRejection", exn => { throw exn; });
 
 let reboots = 0;
 
-emulator.add_listener("emulator-loaded", () => {
-    note("loaded, booting " + iso);
+emulator.add_listener("emulator-loaded", async () => {
+    if(RESTORE)
+    {
+        note("restoring " + RESTORE);
+        await emulator.restore_state(new Uint8Array(fs.readFileSync(RESTORE)).buffer);
+        await emulator.run();
+        note("restored and running");
+    }
+    else
+    {
+        note("loaded, booting " + iso);
+    }
 
     // A guest that resets looks from the outside like one that went back to the bootloader, and
     // the two want completely different investigations. Windows resets rather than reporting when
@@ -343,6 +360,19 @@ const shooter = setInterval(() => {
          `(${(instructions / seconds / 1e6).toFixed(1)} million instructions/s)`);
     screenshot(tag);
 }, SHOT_MS);
+
+if(SAVE_AT)
+{
+    setTimeout(async () => {
+        const path = OUT + "/state.bin";
+        note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** saving the machine to ${path}`);
+        await emulator.stop();
+        const state = await emulator.save_state();
+        fs.writeFileSync(path, Buffer.from(state));
+        await emulator.run();
+        note(`  wrote ${(state.byteLength / (1024 * 1024)).toFixed(0)} MB`);
+    }, SAVE_AT * 1000);
+}
 
 for(const at of KEYS_AT)
 {

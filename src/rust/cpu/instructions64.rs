@@ -3254,6 +3254,30 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
+        // popcnt, the number of set bits. cpuid advertises it, so a guest is entitled to use it
+        // whether or not the 64-bit table had it - which it did not.
+        0xB8 => {
+            if 0 == *prefixes & crate::prefix::PREFIX_F3 {
+                dbg_log!("Unimplemented: 64-bit 0f b8 without an f3 prefix");
+                return false;
+            }
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let src = match read_rm(modrm_byte, osize) {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            let masked =
+                if osize == 64 { src as u64 } else { src as u64 & ((1u64 << osize) - 1) };
+            write_reg_sized(modrm_reg(modrm_byte), masked.count_ones() as i64, osize);
+            // zf says whether the source was zero; every other flag is cleared
+            *flags = *flags & !FLAGS_ALL | if masked == 0 { FLAG_ZERO } else { 0 };
+            *flags_changed = 0;
+            true
+        },
+
         // shld and shrd: shift one operand, filling from the other. 0xA4 and 0xAC take the count
         // as an immediate, 0xA5 and 0xAD from cl.
         0xA4 | 0xA5 | 0xAC | 0xAD => {

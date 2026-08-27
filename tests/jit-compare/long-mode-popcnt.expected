@@ -1,0 +1,9 @@
+; What long-mode-popcnt.asm leaves behind.
+r8  = 40                   ; every bit of a full register
+r9  = 1a                   ; twenty-six bits, counted by hand from the nibbles
+r10 = 4                    ; the 32-bit form counts the low half only
+r11 = 0
+r12 = 1                    ; a source of zero sets zf
+r13 = 0                    ; and popcnt clears carry whatever it was
+r14 = 1
+r15 = 1                    ; a non-zero source clears zf

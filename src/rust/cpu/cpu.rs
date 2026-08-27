@@ -3769,7 +3769,16 @@ unsafe fn run_instruction_64(mut opcode: i32) {
         *rex,
         *previous_ip
     );
-    dbg_assert!(false, "Unimplemented 64-bit instruction");
+    // The opcode belongs in the panic itself, not only in a dbg_log the caller may have switched
+    // off: this is how an unimplemented instruction is found, and a run that reaches one is often
+    // minutes long and awkward to repeat.
+    dbg_assert!(
+        false,
+        "Unimplemented 64-bit instruction: opcode={:02x} rex={:02x} eip={:x}",
+        opcode,
+        *rex,
+        *previous_ip
+    );
     *prefixes = 0;
     *rex = 0;
     trigger_ud();
