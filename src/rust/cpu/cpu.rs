@@ -2943,8 +2943,10 @@ pub unsafe fn trigger_pagefault(
         dbg_trace();
     }
     profiler::stat_increment(stat::PAGE_FAULT);
-    // cr is an array of i32, so a faulting address above 4 GiB reaches cr2 truncated. Reporting
-    // it in full needs the control registers widened too, which nothing yet reads back.
+    // At full width, with the low half mirrored into the i32 the jit and the 32-bit tables read.
+    // A 64-bit kernel reads cr2 in its page fault handler on every demand page, and the address it
+    // wants is in the high half of the address space.
+    *cr2 = addr;
     *cr.offset(2) = addr as i32;
     // invalidate tlb entry
     clear_tlb_slot(tlb_slot(addr) as i32);
@@ -5609,6 +5611,7 @@ pub unsafe fn reset_cpu() {
 
     *cr = 1 << 30 | 1 << 29 | 1 << 4;
     *cr.offset(2) = 0;
+    *cr2 = 0;
     *cr.offset(3) = 0;
     *cr.offset(4) = 0;
     *dreg.offset(6) = 0xFFFF0FF0u32 as i32;

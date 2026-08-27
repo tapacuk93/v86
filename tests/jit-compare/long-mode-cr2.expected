@@ -1,0 +1,5 @@
+; What long-mode-cr2.asm leaves behind. The faulting address is at 517 GiB, which a 32-bit cr2
+; could not report.
+r8  = 1                    ; cr2 held the address that faulted
+r9  = 8140001000           ; at full width, not truncated to its low half
+r10 = 1234                 ; and the page next to it was mapped and readable

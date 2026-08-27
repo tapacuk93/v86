@@ -69,6 +69,12 @@ pub const sfmask: *mut i64 = 352 as *mut i64;
 pub const idtr_offset: *mut i64 = 360 as *mut i64;
 pub const gdtr_offset: *mut i64 = 368 as *mut i64;
 
+/// cr2, the linear address of the last page fault, at full width. The `cr` array is i32 and shared
+/// with the jit and the 32-bit tables, so the low half is mirrored there and this is what 64-bit
+/// code reads. A kernel reads cr2 in its page fault handler on every demand page, and its faulting
+/// addresses are in the high half of the address space.
+pub const cr2: *mut i64 = 376 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;

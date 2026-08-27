@@ -112,6 +112,10 @@ export function CPU(bus, wm, stop_idling)
     this.gdtr_size = view(Int32Array, memory, 572, 1);
     this.gdtr_offset = view(Int32Array, memory, 368, 2);
 
+    // cr2 at full width, as a low and a high half. The low half is mirrored into cr[2], which the
+    // jit and the 32-bit tables read; this is what 64-bit code sees.
+    this.cr2 = view(Int32Array, memory, 376, 2);
+
     this.tss_size_32 = view(Int32Array, memory, 1128, 1);
 
     this.cr = view(Int32Array, memory, 580, 8);
@@ -645,6 +649,7 @@ CPU.prototype.get_state = function()
     state[98] = this.lstar;
     state[99] = this.cstar;
     state[100] = this.sfmask;
+    state[101] = this.cr2;
 
     return state;
 };
@@ -824,6 +829,7 @@ CPU.prototype.set_state = function(state)
     state[98] && this.lstar.set(state[98]);
     state[99] && this.cstar.set(state[99]);
     state[100] && this.sfmask.set(state[100]);
+    state[101] && this.cr2.set(state[101]);
 
     this.fw_value = state[62];
 

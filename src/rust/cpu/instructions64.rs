@@ -3680,17 +3680,24 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             }
 
             if opcode == 0x20 {
-                write_reg64(reg, *cr.offset(creg as isize) as u32 as i64);
+                // cr2 is a linear address and is read at full width; the rest are 32-bit values
+                // that zero extend.
+                let value =
+                    if creg == 2 { *cr2 } else { *cr.offset(creg as isize) as u32 as i64 };
+                write_reg64(reg, value);
             }
             else {
                 let value = read_reg64(reg);
                 dbg_assert!(
-                    value as u64 >> 32 == 0,
+                    creg == 2 || value as u64 >> 32 == 0,
                     "Unsupported: control register above 32 bits"
                 );
                 match creg {
                     0 => set_cr0(value as i32),
-                    2 => *cr.offset(2) = value as i32,
+                    2 => {
+                        *cr2 = value;
+                        *cr.offset(2) = value as i32;
+                    },
                     3 => set_cr3(value as i32),
                     _ => {
                         // cr4 goes through the 0f22 path for its side effects
