@@ -1,0 +1,5 @@
+; What long-mode-fxsave.asm leaves behind.
+r8  = 0102030405060708     ; xmm0 came back
+r9  = aabbccddeeff0011     ; and xmm8, which the 32-bit fxsave would not have saved
+r10 = 1122334455667788     ; and xmm15
+r11 = 1fc0                 ; and the mxcsr that was in effect when the state was saved

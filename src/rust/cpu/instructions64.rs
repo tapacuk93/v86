@@ -16,7 +16,9 @@ use crate::cpu::arith;
 use crate::cpu::cpu::*;
 use crate::cpu::global_pointers::*;
 use crate::cpu::memory;
+use crate::cpu::fpu::{fpu_load_status_word, fpu_set_status_word, set_control_word};
 use crate::cpu::misc_instr::{getaf, getcf, getof, getpf, getsf, getzf};
+use crate::softfloat::F80;
 use crate::paging::OrPageFault;
 
 /// Narrow an address that v86 still keeps in 32 bits.
@@ -746,6 +748,95 @@ fn sse_66_source_op(opcode: i32) -> Option<unsafe fn(reg128, i32)> {
         0xFE => i::instr_660FFE,
         _ => return None,
     })
+}
+
+/// fxsave and fxrstor in 64-bit mode.
+///
+/// Not a delegation to the 32-bit pair. Those reach memory through 32-bit addresses, and they save
+/// eight xmm registers where 64-bit mode has sixteen - and the eight they would miss are not
+/// scratch, since windows saves and restores fpu state with these across thread switches.
+///
+/// rex.w selects the fxsave64 encoding, whose difference is that the fpu instruction and data
+/// pointers are kept at full width rather than as an offset and a selector. v86 holds 32 bits of
+/// each either way, so both forms store what it has.
+unsafe fn fxsave64(addr: i64) -> OrPageFault<()> {
+    if addr & 0xF != 0 {
+        dbg_log!("#gp fxsave to a misaligned address {:x}", addr);
+        trigger_gp(0);
+        return Err(());
+    }
+    writable_or_pagefault64(addr, 512)?;
+
+    safe_write16_64(addr, *fpu_control_word as i32)?;
+    safe_write16_64(addr + 2, fpu_load_status_word() as i32)?;
+    safe_write8_64(addr + 4, !*fpu_stack_empty as i32 & 0xFF)?;
+    safe_write16_64(addr + 6, *fpu_opcode)?;
+    safe_write32_64(addr + 8, *fpu_ip)?;
+    safe_write16_64(addr + 12, *fpu_ip_selector)?;
+    safe_write32_64(addr + 16, *fpu_dp)?;
+    safe_write16_64(addr + 20, *fpu_dp_selector)?;
+    safe_write32_64(addr + 24, *mxcsr)?;
+    safe_write32_64(addr + 28, MXCSR_MASK)?;
+
+    for i in 0..8i64 {
+        let reg = (i as i32 + *fpu_stack_ptr as i32) & 7;
+        let f = *fpu_st.offset(reg as isize);
+        safe_write64_64(addr + 32 + i * 16, f.mantissa)?;
+        safe_write16_64(addr + 32 + i * 16 + 8, f.sign_exponent as i32)?;
+    }
+
+    for i in 0..16i64 {
+        safe_write128_64(addr + 160 + i * 16, *reg_xmm.offset(i as isize))?;
+    }
+    Ok(())
+}
+
+unsafe fn fxrstor64(addr: i64) -> OrPageFault<()> {
+    if addr & 0xF != 0 {
+        dbg_log!("#gp fxrstor from a misaligned address {:x}", addr);
+        trigger_gp(0);
+        return Err(());
+    }
+
+    // Read the whole area before applying any of it: there is no readable_or_pagefault at this
+    // width, and a fault partway through would otherwise leave the fpu half restored.
+    let mut area = [0u64; 64];
+    for i in 0..64 {
+        area[i] = safe_read64s_64(addr + (i as i64) * 8)?;
+    }
+    let byte = |at: usize| -> i32 { (area[at / 8] >> ((at % 8) * 8)) as u8 as i32 };
+    let word = |at: usize| -> u16 { (area[at / 8] >> ((at % 8) * 8)) as u16 };
+    let dword = |at: usize| -> i32 { (area[at / 8] >> ((at % 8) * 8)) as u32 as i32 };
+
+    let new_mxcsr = dword(24);
+    if 0 != new_mxcsr & !MXCSR_MASK {
+        dbg_log!("#gp fxrstor with reserved mxcsr bits {:x}", new_mxcsr & !MXCSR_MASK);
+        trigger_gp(0);
+        return Err(());
+    }
+
+    set_control_word(word(0));
+    fpu_set_status_word(word(2));
+    *fpu_stack_empty = !byte(4) as u8;
+    *fpu_opcode = word(6) as i32;
+    *fpu_ip = dword(8);
+    *fpu_ip_selector = word(12) as i32;
+    *fpu_dp = dword(16);
+    *fpu_dp_selector = word(20) as i32;
+    set_mxcsr(new_mxcsr);
+
+    for i in 0..8 {
+        let reg = (*fpu_stack_ptr as i32 + i as i32) & 7;
+        let at = 32 + i * 16;
+        *fpu_st.offset(reg as isize) =
+            F80 { mantissa: area[at / 8], sign_exponent: word(at + 8) };
+    }
+
+    for i in 0..16 {
+        let at = 160 + i * 16;
+        *reg_xmm.offset(i as isize) = reg128 { u64: [area[at / 8], area[at / 8 + 1]] };
+    }
+    Ok(())
 }
 
 /// cmpxchg8b and cmpxchg16b: compare the pair in edx:eax (or rdx:rax) against a location twice the
@@ -3201,9 +3292,52 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 Err(()) => return true,
             };
             let group = modrm_byte >> 3 & 7;
-            if modrm_byte < 0xC0 || !matches!(group, 5 | 6 | 7) {
-                dbg_log!("Unimplemented: 64-bit 0fae /{} mod={}", group, modrm_byte >> 6);
-                return false;
+
+            if modrm_byte >= 0xC0 {
+                // the fences, which are the register forms of /5, /6 and /7
+                if !matches!(group, 5 | 6 | 7) {
+                    dbg_log!("Unimplemented: 64-bit 0fae /{} reg", group);
+                    return false;
+                }
+                return true;
+            }
+
+            let addr = match resolve_modrm64(modrm_byte) {
+                Ok(a) => a,
+                Err(()) => return true,
+            };
+            match group {
+                0 => {
+                    let _ = fxsave64(addr);
+                },
+                1 => {
+                    let _ = fxrstor64(addr);
+                },
+                2 => {
+                    // ldmxcsr
+                    match safe_read32s_64(addr) {
+                        Ok(v) => {
+                            if 0 != v & !MXCSR_MASK {
+                                dbg_log!("#gp ldmxcsr with reserved bits {:x}", v & !MXCSR_MASK);
+                                trigger_gp(0);
+                            }
+                            else {
+                                set_mxcsr(v);
+                            }
+                        },
+                        Err(()) => {},
+                    }
+                },
+                // stmxcsr
+                3 => {
+                    let _ = safe_write32_64(addr, *mxcsr);
+                },
+                // clflush, which has nothing to flush here
+                7 => {},
+                _ => {
+                    dbg_log!("Unimplemented: 64-bit 0fae /{} mem", group);
+                    return false;
+                },
             }
             true
         },
