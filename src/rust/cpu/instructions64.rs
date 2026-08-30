@@ -3378,24 +3378,18 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             let dr = if dr == 4 || dr == 5 { dr + 2 } else { dr };
 
             if opcode == 0x21 {
-                // v86 keeps 32 bits of each; the halves above them read as zero, which is what
-                // they are on a machine that has never had a breakpoint above 4 GiB set.
-                write_reg64(reg, *dreg.offset(dr as isize) as u32 as i64);
+                write_reg64(reg, *dreg64.offset(dr as isize));
             }
             else {
-                let value = read_reg64(reg);
-                if dr == 6 || dr == 7 {
-                    // the reserved bits of dr6 and dr7 read back fixed
-                    *dreg.offset(dr as isize) =
-                        if dr == 6 { value as i32 | 0xFFFF0FF0u32 as i32 } else { value as i32 | 0x400 };
-                }
-                else {
-                    dbg_assert!(
-                        value as u64 >> 32 == 0,
-                        "Unsupported: breakpoint address above 4 GiB"
-                    );
-                    *dreg.offset(dr as isize) = value as i32;
-                }
+                // dr0 to dr3 are addresses and take the whole register; the reserved bits of dr6
+                // and dr7 read back fixed whatever is written.
+                let value = match dr {
+                    6 => read_reg64(reg) | 0xFFFF0FF0u32 as i32 as u32 as i64,
+                    7 => read_reg64(reg) | 0x400,
+                    _ => read_reg64(reg),
+                };
+                *dreg64.offset(dr as isize) = value;
+                *dreg.offset(dr as isize) = value as i32;
             }
             true
         },

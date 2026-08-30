@@ -239,6 +239,9 @@ export function CPU(bus, wm, stop_idling)
     // debug registers
     this.dreg = view(Int32Array, memory, 684, 8);
 
+    // The debug registers at full width; their low halves are mirrored into dreg above.
+    this.dreg64 = view(Int32Array, memory, 392, 16);
+
     this.reg_pdpte = view(Int32Array, memory, 968, 8);
 
     this.svga_dirty_bitmap_min_offset = view(Uint32Array, memory, 716, 1);
@@ -654,6 +657,7 @@ CPU.prototype.get_state = function()
     state[100] = this.sfmask;
     state[101] = this.cr2;
     state[102] = this.tr_base;
+    state[103] = this.dreg64;
 
     return state;
 };
@@ -835,6 +839,7 @@ CPU.prototype.set_state = function(state)
     state[100] && this.sfmask.set(state[100]);
     state[101] && this.cr2.set(state[101]);
     state[102] && this.tr_base.set(state[102]);
+    state[103] && this.dreg64.set(state[103]);
 
     this.fw_value = state[62];
 

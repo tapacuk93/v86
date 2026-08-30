@@ -1,0 +1,5 @@
+; What long-mode-dr.asm leaves behind.
+r8  = 8140001234           ; a breakpoint address above 4 GiB survives a round trip
+r9  = ffff800000001000     ; and one in the high half of the canonical space
+r10 = 400                  ; dr7's reserved bit reads back set
+r11 = ffff0ff0             ; and dr6's, even when zero was written

@@ -845,6 +845,9 @@ pub unsafe fn instr_0F23(r: i32, mut dreg_index: i32) {
         }
     }
     *dreg.offset(dreg_index as isize) = read_reg32(r);
+    // Keep the wide copy in step, so a guest that sets a breakpoint in protected mode and reads it
+    // back in long mode sees what it wrote.
+    *dreg64.offset(dreg_index as isize) = read_reg32(r) as u32 as i64;
     if false {
         dbg_log!(
             "write dr{}: {:x}",

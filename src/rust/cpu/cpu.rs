@@ -5562,6 +5562,7 @@ pub unsafe fn reset_cpu() {
 
         *sreg.offset(i) = 0;
         *dreg.offset(i) = 0;
+        *dreg64.offset(i) = 0;
 
         write_xmm128_2(i as i32, 0, 0);
 
@@ -5621,6 +5622,8 @@ pub unsafe fn reset_cpu() {
     *cr.offset(4) = 0;
     *dreg.offset(6) = 0xFFFF0FF0u32 as i32;
     *dreg.offset(7) = 0x400;
+    *dreg64.offset(6) = 0xFFFF0FF0u32 as i32 as u32 as i64;
+    *dreg64.offset(7) = 0x400;
     *cpl = 0;
 
     *is_32 = false;

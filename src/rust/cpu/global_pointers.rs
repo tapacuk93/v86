@@ -81,6 +81,13 @@ pub const cr2: *mut i64 = 376 as *mut i64;
 /// stack lookup still read.
 pub const tr_base: *mut i64 = 384 as *mut i64;
 
+/// The debug registers at full width, eight of them. Nothing here acts on them - there is no
+/// breakpoint machinery - so they are storage, and the only thing a guest can observe is reading
+/// back what it wrote. In long mode the address registers are 64 bits, so a 32-bit array made that
+/// read-back wrong and made a breakpoint above 4 GiB an assertion failure rather than a value.
+/// The low halves are mirrored into `dreg` for the 32-bit paths.
+pub const dreg64: *mut i64 = 392 as *mut i64; // 8 64-bit entries, to 456
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;
