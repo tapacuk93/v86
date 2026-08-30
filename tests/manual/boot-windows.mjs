@@ -19,6 +19,10 @@
 //   SAMPLE_MS=n      how often to sample cpu state (default 250)
 //   SHOT_MS=n        how often to write a screenshot (default 5000)
 //   DISABLE_JIT=1    interpret everything, for telling a codegen bug from an interpreter one
+//   MIN_MIPS=n       give up if the emulator falls below this (default 8). A run on a host that is
+//                    swapping does not merely go slowly: node's timers fire minutes late, so the
+//                    keypresses land in the wrong phase and the whole run is noise that looks like
+//                    a result. Better to stop and say so.
 //   HOT_FROM=n       ignore the first n seconds in the hot-address report, so that a phase late in
 //                    the boot is not drowned out by the phases that worked
 //   SAVE_AT=n        write the whole machine to OUT/state.bin after n seconds
@@ -64,6 +68,7 @@ const MEMORY = (+process.env.MEMORY || 1024) * 1024 * 1024;
 const SAMPLE_MS = +process.env.SAMPLE_MS || 250;
 const SHOT_MS = +process.env.SHOT_MS || 5000;
 const HOT_FROM = +process.env.HOT_FROM || 0;
+const MIN_MIPS = process.env.MIN_MIPS === undefined ? 8 : +process.env.MIN_MIPS;
 const SAVE_AT = +process.env.SAVE_AT || 0;
 const RESTORE = process.env.RESTORE || "";
 const KEYS_AT = (process.env.KEYS_AT || "").split(",").filter(Boolean).map(Number);
@@ -281,6 +286,8 @@ let instructions = 0;
 
 const spaces = new Set();
 const modes = new Map();
+let last_sample_at = Date.now();
+let starved = 0;
 let last_tick = -1;
 let ticks_seen = 0;
 
@@ -306,8 +313,31 @@ const sampler = setInterval(() => {
     modes.set(bucket, (modes.get(bucket) || 0) + 1);
 
     const counter = emulator.v86.cpu.instruction_counter[0] >>> 0;
-    instructions += (counter - last_counter) >>> 0;
+    const delta = (counter - last_counter) >>> 0;
+    instructions += delta;
     last_counter = counter;
+
+    // Two symptoms of a host that is swapping, either of which invalidates the run: the emulator
+    // crawling, and this very interval firing late - which is what moves the keypresses out of the
+    // phase they were aimed at.
+    const gap = Date.now() - last_sample_at;
+    last_sample_at = Date.now();
+    if(elapsed > 20 && MIN_MIPS)
+    {
+        const mips = delta / gap / 1000;
+        starved = mips < MIN_MIPS || gap > SAMPLE_MS * 8 ? starved + 1 : 0;
+        if(starved >= 20)
+        {
+            note(`\n== giving up at ${elapsed.toFixed(0)}s: ${mips.toFixed(1)} million ` +
+                 `instructions/s and this sampler ${gap}ms late, against a ${SAMPLE_MS}ms interval.`);
+            note("== the host is not able to run this; the result would be noise. Free memory and retry.");
+            clearInterval(sampler);
+            clearInterval(shooter);
+            log_file.end();
+            emulator.destroy();
+            process.exit(2);
+        }
+    }
 
     // Each new cr3 is a new address space, which is the clearest sign of real progress there is:
     // the bootloader builds one, winload builds another, and the kernel another after that.
