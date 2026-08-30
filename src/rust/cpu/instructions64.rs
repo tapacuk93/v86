@@ -1155,6 +1155,195 @@ unsafe fn sse_move(
     }
 }
 
+// ---------------------------------------------------------------- the x87 escapes
+//
+// The register forms of 0xD8 to 0xDF delegate: they take no address and behave identically in
+// 64-bit mode. The memory forms cannot, because every one of the 32-bit implementations takes an
+// i32 address - and the kernel that reaches these keeps its data in the high half of the address
+// space. They are written out here against the same value-taking cores the 32-bit ones use.
+//
+// Windows initialises the fpu as it starts each processor, so a 64-bit boot reaches this the
+// moment the kernel itself begins running.
+
+unsafe fn fpu_load_m32_64(addr: i64) -> OrPageFault<F80> {
+    F80::clear_exception_flags();
+    let v = F80::of_f32(safe_read32s_64(addr)?);
+    *fpu_status_word |= F80::get_exception_flags() as u16;
+    Ok(v)
+}
+
+unsafe fn fpu_load_m64_64(addr: i64) -> OrPageFault<F80> {
+    F80::clear_exception_flags();
+    let v = F80::of_f64(safe_read64s_64(addr)?);
+    *fpu_status_word |= F80::get_exception_flags() as u16;
+    Ok(v)
+}
+
+unsafe fn fpu_load_m80_64(addr: i64) -> OrPageFault<F80> {
+    let mantissa = safe_read64s_64(addr)?;
+    let sign_exponent = safe_read16_64(addr + 8)? as u16;
+    Ok(F80 { mantissa, sign_exponent })
+}
+
+unsafe fn fpu_store_m32_64(addr: i64, x: F80) -> OrPageFault<()> {
+    F80::clear_exception_flags();
+    safe_write32_64(addr, x.to_f32())?;
+    *fpu_status_word |= F80::get_exception_flags() as u16;
+    Ok(())
+}
+
+unsafe fn fpu_store_m64_64(addr: i64, x: F80) -> OrPageFault<()> {
+    safe_write64_64(addr, x.to_f64())
+}
+
+unsafe fn fpu_store_m80_64(addr: i64, x: F80) -> OrPageFault<()> {
+    safe_write64_64(addr, x.mantissa)?;
+    safe_write16_64(addr + 8, x.sign_exponent as i32)
+}
+
+
+/// The register form of an x87 escape, which takes no address and behaves identically in 64-bit
+/// mode, so it is the 32-bit implementation unchanged.
+unsafe fn fpu_reg_form(opcode: i32, group: i32, rm: i32) {
+    use crate::cpu::instructions as i;
+    match opcode {
+        0xD8 => match group { 0 => i::instr_D8_0_reg(rm), 1 => i::instr_D8_1_reg(rm), 2 => i::instr_D8_2_reg(rm), 3 => i::instr_D8_3_reg(rm), 4 => i::instr_D8_4_reg(rm), 5 => i::instr_D8_5_reg(rm), 6 => i::instr_D8_6_reg(rm), 7 => i::instr_D8_7_reg(rm), _ => unreachable!() },
+        0xD9 => match group { 0 => i::instr16_D9_0_reg(rm), 1 => i::instr16_D9_1_reg(rm), 2 => i::instr16_D9_2_reg(rm), 3 => i::instr16_D9_3_reg(rm), 4 => i::instr16_D9_4_reg(rm), 5 => i::instr16_D9_5_reg(rm), 6 => i::instr16_D9_6_reg(rm), 7 => i::instr16_D9_7_reg(rm), _ => unreachable!() },
+        0xDA => match group { 0 => i::instr_DA_0_reg(rm), 1 => i::instr_DA_1_reg(rm), 2 => i::instr_DA_2_reg(rm), 3 => i::instr_DA_3_reg(rm), 4 => i::instr_DA_4_reg(rm), 5 => i::instr_DA_5_reg(rm), 6 => i::instr_DA_6_reg(rm), 7 => i::instr_DA_7_reg(rm), _ => unreachable!() },
+        0xDB => match group { 0 => i::instr_DB_0_reg(rm), 1 => i::instr_DB_1_reg(rm), 2 => i::instr_DB_2_reg(rm), 3 => i::instr_DB_3_reg(rm), 4 => i::instr_DB_4_reg(rm), 5 => i::instr_DB_5_reg(rm), 6 => i::instr_DB_6_reg(rm), 7 => i::instr_DB_7_reg(rm), _ => unreachable!() },
+        0xDC => match group { 0 => i::instr_DC_0_reg(rm), 1 => i::instr_DC_1_reg(rm), 2 => i::instr_DC_2_reg(rm), 3 => i::instr_DC_3_reg(rm), 4 => i::instr_DC_4_reg(rm), 5 => i::instr_DC_5_reg(rm), 6 => i::instr_DC_6_reg(rm), 7 => i::instr_DC_7_reg(rm), _ => unreachable!() },
+        0xDD => match group { 0 => i::instr16_DD_0_reg(rm), 1 => i::instr16_DD_1_reg(rm), 2 => i::instr16_DD_2_reg(rm), 3 => i::instr16_DD_3_reg(rm), 4 => i::instr16_DD_4_reg(rm), 5 => i::instr16_DD_5_reg(rm), 6 => i::instr16_DD_6_reg(rm), 7 => i::instr16_DD_7_reg(rm), _ => unreachable!() },
+        0xDE => match group { 0 => i::instr_DE_0_reg(rm), 1 => i::instr_DE_1_reg(rm), 2 => i::instr_DE_2_reg(rm), 3 => i::instr_DE_3_reg(rm), 4 => i::instr_DE_4_reg(rm), 5 => i::instr_DE_5_reg(rm), 6 => i::instr_DE_6_reg(rm), 7 => i::instr_DE_7_reg(rm), _ => unreachable!() },
+        0xDF => match group { 0 => i::instr_DF_0_reg(rm), 1 => i::instr_DF_1_reg(rm), 2 => i::instr_DF_2_reg(rm), 3 => i::instr_DF_3_reg(rm), 4 => i::instr_DF_4_reg(rm), 5 => i::instr_DF_5_reg(rm), 6 => i::instr_DF_6_reg(rm), 7 => i::instr_DF_7_reg(rm), _ => unreachable!() },
+        _ => unreachable!(),
+    }
+}
+
+/// The memory form. Written out rather than delegated because every 32-bit implementation takes an
+/// i32 address, and a kernel's operands are nowhere near the low 4 GiB.
+///
+/// Returns false for the shapes still missing - the environment and state save areas, the packed
+/// decimal pair, and fisttp - so that they trap by name rather than doing something wrong quietly.
+unsafe fn fpu_mem_form(opcode: i32, group: i32, addr: i64) -> bool {
+    use crate::cpu::fpu::*;
+
+    // The arithmetic escapes differ only in the width they load; the operation is the group.
+    let arithmetic_width = match opcode {
+        0xD8 => Some(32),  // m32fp
+        0xDA => Some(-32), // m32int
+        0xDC => Some(64),  // m64fp
+        0xDE => Some(-16), // m16int
+        _ => None,
+    };
+    if let Some(width) = arithmetic_width {
+        let value = match match width {
+            32 => fpu_load_m32_64(addr),
+            64 => fpu_load_m64_64(addr),
+            -32 => safe_read32s_64(addr).map(F80::of_i32),
+            _ => safe_read16_64(addr).map(|v| F80::of_i32(v as i16 as i32)),
+        } {
+            Ok(v) => v,
+            Err(()) => return true,
+        };
+        match group {
+            0 => fpu_fadd(0, value),
+            1 => fpu_fmul(0, value),
+            2 => fpu_fcom(value),
+            3 => fpu_fcomp(value),
+            4 => fpu_fsub(0, value),
+            5 => fpu_fsubr(0, value),
+            6 => fpu_fdiv(0, value),
+            _ => fpu_fdivr(0, value),
+        }
+        return true;
+    }
+
+    match (opcode, group) {
+        // fld and fst/fstp at single precision
+        (0xD9, 0) => match fpu_load_m32_64(addr) {
+            Ok(v) => fpu_push(v),
+            Err(()) => {},
+        },
+        (0xD9, 2) | (0xD9, 3) => {
+            if fpu_store_m32_64(addr, fpu_get_st0()).is_ok() && group == 3 {
+                fpu_pop();
+            }
+        },
+        // fldcw and fnstcw, which is how a kernel sets the rounding and exception masks
+        (0xD9, 5) => match safe_read16_64(addr) {
+            Ok(v) => set_control_word(v as u16),
+            Err(()) => {},
+        },
+        (0xD9, 7) => {
+            let _ = safe_write16_64(addr, (*fpu_control_word).into());
+        },
+
+        // fild and fist/fistp at each integer width
+        (0xDB, 0) => match safe_read32s_64(addr).map(F80::of_i32) {
+            Ok(v) => fpu_push(v),
+            Err(()) => {},
+        },
+        (0xDF, 0) => match safe_read16_64(addr).map(|v| F80::of_i32(v as i16 as i32)) {
+            Ok(v) => fpu_push(v),
+            Err(()) => {},
+        },
+        (0xDF, 5) => match safe_read64s_64(addr).map(|v| F80::of_i64(v as i64)) {
+            Ok(v) => fpu_push(v),
+            Err(()) => {},
+        },
+        (0xDB, 2) | (0xDB, 3) => {
+            let v = fpu_convert_to_i32(fpu_get_st0());
+            if safe_write32_64(addr, v).is_ok() && group == 3 {
+                fpu_pop();
+            }
+        },
+        (0xDF, 2) | (0xDF, 3) => {
+            let v = fpu_convert_to_i16(fpu_get_st0());
+            if safe_write16_64(addr, v as i32 & 0xFFFF).is_ok() && group == 3 {
+                fpu_pop();
+            }
+        },
+        (0xDF, 7) => {
+            let v = fpu_convert_to_i64(fpu_get_st0());
+            if safe_write64_64(addr, v as u64).is_ok() {
+                fpu_pop();
+            }
+        },
+
+        // fld and fstp at extended precision
+        (0xDB, 5) => match fpu_load_m80_64(addr) {
+            Ok(v) => fpu_push(v),
+            Err(()) => {},
+        },
+        (0xDB, 7) => {
+            if fpu_store_m80_64(addr, fpu_get_st0()).is_ok() {
+                fpu_pop();
+            }
+        },
+
+        // fld and fst/fstp at double precision
+        (0xDD, 0) => match fpu_load_m64_64(addr) {
+            Ok(v) => fpu_push(v),
+            Err(()) => {},
+        },
+        (0xDD, 2) | (0xDD, 3) => {
+            if fpu_store_m64_64(addr, fpu_get_st0()).is_ok() && group == 3 {
+                fpu_pop();
+            }
+        },
+        // fnstsw, the status word to memory
+        (0xDD, 7) => {
+            let _ = safe_write16_64(addr, fpu_load_status_word() as i32);
+        },
+
+        _ => {
+            dbg_log!("Unimplemented: 64-bit x87 {:02x} /{} mem", opcode, group);
+            return false;
+        },
+    }
+    true
+}
+
 /// Zero extend the results of an instruction delegated to its 32-bit implementation.
 ///
 /// write_reg32 leaves the upper half of the register alone, which is right in 32-bit mode - there
@@ -1569,6 +1758,25 @@ pub unsafe fn run(opcode: i32) -> bool {
         // only a 0x66 prefix narrows them, so the check is against 16 rather than for 64. The
         // 16-bit form moves the stack pointer by two rather than eight, which needs its own narrow
         // push and pop, and nothing has asked for it.
+        // The x87 escapes. Windows initialises the fpu as it starts each processor, so a 64-bit
+        // boot reaches these the moment the kernel itself begins running.
+        0xD8..=0xDF => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let group = modrm_byte >> 3 & 7;
+            if modrm_byte >= 0xC0 {
+                fpu_reg_form(opcode, group, modrm_byte & 7);
+                return true;
+            }
+            let addr = match resolve_modrm64(modrm_byte) {
+                Ok(a) => a,
+                Err(()) => return true,
+            };
+            fpu_mem_form(opcode, group, addr)
+        },
+
         // in and out, with the port either in an immediate byte or in dx. The operand is 8, 16 or
         // 32 bits and never 64: rex.w means nothing here, so the width comes from the opcode and
         // the 0x66 prefix alone.

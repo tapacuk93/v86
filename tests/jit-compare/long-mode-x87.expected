@@ -1,0 +1,6 @@
+; What long-mode-x87.asm leaves behind. Every operand was reached at 517 GiB.
+r8  = 37f                  ; the control word at reset
+r9  = 27f                  ; and after fldcw wrote a new one
+r10 = 3ff0000000000000     ; 1.0 through fld and fstp at double precision
+r11 = 3039                 ; 12345 through fild and fistp
+r12 = 4008000000000000     ; 1.0 + 2.0, with the addend read from memory
