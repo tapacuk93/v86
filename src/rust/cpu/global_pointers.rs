@@ -75,6 +75,12 @@ pub const gdtr_offset: *mut i64 = 368 as *mut i64;
 /// addresses are in the high half of the address space.
 pub const cr2: *mut i64 = 376 as *mut i64;
 
+/// The tss base, at full width. Long mode's tss descriptor is sixteen bytes and carries a 64-bit
+/// base, and a kernel puts its tss in the high half of the address space along with everything
+/// else. The low half is mirrored into `segment_offsets[TR]`, which the 32-bit task switch and its
+/// stack lookup still read.
+pub const tr_base: *mut i64 = 384 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;

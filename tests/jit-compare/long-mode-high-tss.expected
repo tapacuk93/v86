@@ -1,0 +1,3 @@
+; What long-mode-high-tss.asm leaves behind. The tss is at 517 GiB.
+r8  = 1                    ; the ist stack pointer was read out of the tss through its full base
+r9  = 1                    ; and ltr accepted a base above 4 GiB rather than refusing it

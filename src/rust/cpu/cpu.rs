@@ -809,7 +809,7 @@ unsafe fn read_tss_stack64(offset: i32) -> OrPageFault<i64> {
         dbg_assert!(false, "Unimplemented: #ts for a tss that is too small");
         return Err(());
     }
-    let addr = translate_address_system_read(*segment_offsets.offset(TR as isize) + offset)?;
+    let addr = translate_address_system_read64(*tr_base + offset as i64)?;
     Ok(memory::read64s(addr))
 }
 
@@ -2224,6 +2224,7 @@ pub unsafe fn do_task_switch(selector: i32, error_code: Option<i32>, source: Tas
     set_eip32(get_seg_cs() + if new_eflags & FLAG_VM != 0 { new_eip & 0xFFFF } else { new_eip });
 
     *segment_offsets.offset(TR as isize) = descriptor.base();
+    *tr_base = descriptor.base() as u32 as i64;
     *segment_limits.offset(TR as isize) = descriptor.effective_limit();
     *sreg.offset(TR as isize) = selector.raw;
 
@@ -3377,6 +3378,9 @@ pub unsafe fn load_tr(selector: i32) {
     *tss_size_32 = descriptor.system_type() == 9;
     *segment_limits.offset(TR as isize) = descriptor.effective_limit();
     *segment_offsets.offset(TR as isize) = descriptor.base();
+    // The 32-bit descriptor carries 32 bits of base; keep the wide field in step so that a guest
+    // which loads tr in protected mode and then enters long mode sees the same tss.
+    *tr_base = descriptor.base() as u32 as i64;
     *sreg.offset(TR as isize) = selector.raw;
 
     // Mark task as busy
@@ -5612,6 +5616,7 @@ pub unsafe fn reset_cpu() {
     *cr = 1 << 30 | 1 << 29 | 1 << 4;
     *cr.offset(2) = 0;
     *cr2 = 0;
+    *tr_base = 0;
     *cr.offset(3) = 0;
     *cr.offset(4) = 0;
     *dreg.offset(6) = 0xFFFF0FF0u32 as i32;

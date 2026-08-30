@@ -116,6 +116,9 @@ export function CPU(bus, wm, stop_idling)
     // jit and the 32-bit tables read; this is what 64-bit code sees.
     this.cr2 = view(Int32Array, memory, 376, 2);
 
+    // The tss base at full width; its low half is mirrored into segment_offsets[TR].
+    this.tr_base = view(Int32Array, memory, 384, 2);
+
     this.tss_size_32 = view(Int32Array, memory, 1128, 1);
 
     this.cr = view(Int32Array, memory, 580, 8);
@@ -650,6 +653,7 @@ CPU.prototype.get_state = function()
     state[99] = this.cstar;
     state[100] = this.sfmask;
     state[101] = this.cr2;
+    state[102] = this.tr_base;
 
     return state;
 };
@@ -830,6 +834,7 @@ CPU.prototype.set_state = function(state)
     state[99] && this.cstar.set(state[99]);
     state[100] && this.sfmask.set(state[100]);
     state[101] && this.cr2.set(state[101]);
+    state[102] && this.tr_base.set(state[102]);
 
     this.fw_value = state[62];
 

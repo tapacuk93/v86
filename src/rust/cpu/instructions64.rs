@@ -1387,13 +1387,12 @@ unsafe fn load_tr_64(selector: i32) -> bool {
         trigger_np(selector & !3);
         return true;
     }
-    let base = match truncate_address(base) {
-        Ok(b) => b,
-        Err(()) => return true,
-    };
     *tss_size_32 = true;
     *segment_limits.offset(TR as isize) = descriptor.effective_limit();
-    *segment_offsets.offset(TR as isize) = base;
+    // At full width, with the low half mirrored for the 32-bit paths. Truncating here refused a
+    // tss anywhere but the low 4 GiB, which is nowhere a kernel would put one.
+    *tr_base = base;
+    *segment_offsets.offset(TR as isize) = base as i32;
     *sreg.offset(TR as isize) = selector as u16;
 
     // mark the task busy, as the 32-bit path does
