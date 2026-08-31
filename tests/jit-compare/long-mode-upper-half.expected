@@ -1,0 +1,9 @@
+; What long-mode-upper-half.asm leaves behind. The address is 0xfffff80220a68000, the shape of a
+; real windows kernel address: pml4 index 496, and every bit above 47 set.
+r8  = 1122334455667788     ; written through the high address, read through the identity mapping
+r9  = 99aabbccddeeff00     ; and the other way round
+r10 = cf92001234ffff       ; an eight byte read, which is what a descriptor table walk does
+r11 = 1f0                  ; the indices, so a failure says which level was wrong
+r12 = 8
+r13 = 105
+r14 = 68

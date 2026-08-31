@@ -1,0 +1,6 @@
+; What long-mode-upper-half-large.asm leaves behind: a 2 MiB page at 0xfffff80220a00000, which is
+; the combination a windows kernel actually runs in.
+r8  = 1122334455667788     ; written high, read through the identity mapping
+r9  = 99aabbccddeeff00     ; and the other way round
+r10 = 123456789abcdef      ; near the end of the page, where a wrong page size would show
+r11 = 105
