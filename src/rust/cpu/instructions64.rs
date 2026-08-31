@@ -3712,6 +3712,21 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
+        // prefetch and prefetchw, which are hints: the operand is decoded so that the instruction
+        // is the right length, and nothing is accessed. They do not fault on a bad address.
+        //
+        // Windows requires prefetchw to boot, so cpuid advertises it and this has to exist.
+        0x0D => {
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            if modrm_byte < 0xC0 {
+                let _ = resolve_modrm64(modrm_byte);
+            }
+            true
+        },
+
         // popcnt, the number of set bits. cpuid advertises it, so a guest is entitled to use it
         // whether or not the 64-bit table had it - which it did not.
         0xB8 => {

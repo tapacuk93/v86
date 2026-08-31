@@ -3378,6 +3378,10 @@ pub unsafe fn instr_0FA2() {
             if config::ENABLE_LONG_MODE {
                 edx |= 1 << 29; // lm
                 ecx |= 1 << 0; // lahf/sahf in 64-bit mode
+                // prefetchw. Windows 8.1 and later check for this before they will boot at all,
+                // alongside cmpxchg16b and lahf/sahf - a kernel that does not find it bugchecks
+                // before it has even filled in its interrupt table.
+                ecx |= 1 << 8;
             }
         },
 
