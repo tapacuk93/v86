@@ -5,3 +5,6 @@ r9  = 1                    ; and lahf/sahf in 64-bit mode
 r10 = 1                    ; and cmpxchg16b
 r11 = 1122334455667788     ; the hint changed nothing
 r12 = 1                    ; and did not fault on an unmapped address
+r13 = 1                    ; syscall and sysret, which windows makes every system call through
+r14 = 1                    ; pat
+r15 = 1                    ; and clflush, which is now a real no-op rather than a trap

@@ -1,9 +1,14 @@
 ; prefetchw, and the three cpuid bits Windows checks before it will boot.
 ;
-; Windows 8.1 and later refuse to start on a processor without prefetchw, cmpxchg16b and
-; lahf/sahf in 64-bit mode. A kernel that does not find one of them bugchecks immediately - before
-; it has filled in its interrupt table, which is what made this hard to recognise: the failure
-; looks like a breakpoint into an empty idt rather than like a missing feature.
+; Windows refuses to start on a processor that does not advertise what it needs, and bugchecks with
+; UNSUPPORTED_PROCESSOR before it has filled in its interrupt table - which is what made this hard
+; to recognise: the failure looks like a breakpoint into an empty idt rather than like a missing
+; feature.
+;
+; The bits checked here are the ones that were actually missing, and syscall is the instructive one:
+; it was implemented, with a fixture driving the whole round trip to cpl 3 and back, and never
+; advertised. A guest can only use what cpuid says exists, so an unadvertised implementation is as
+; useless as an unimplemented one - and windows makes every system call through it.
 ;
 ; prefetch and prefetchw are hints. The operand is decoded so the instruction has the right length,
 ; and nothing is accessed - notably they do not fault on an address that is not mapped, which is
@@ -23,11 +28,23 @@ long_mode:
     mov r9, rcx
     and r9, 1                               ; -> 1, lahf/sahf in 64-bit mode
 
+    mov r13, rdx
+    shr r13, 11
+    and r13, 1                              ; -> 1, syscall/sysret
+
     mov eax, 1
     cpuid
     mov r10, rcx
     shr r10, 13
     and r10, 1                              ; -> 1, cmpxchg16b
+
+    mov r14, rdx
+    shr r14, 16
+    and r14, 1                              ; -> 1, pat
+
+    mov r15, rdx
+    shr r15, 19
+    and r15, 1                              ; -> 1, clflush
 
     ; the hint itself changes nothing
     mov rdi, 0x7100

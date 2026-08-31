@@ -3306,6 +3306,8 @@ pub unsafe fn instr_0FA2() {
             edx = (if true /* have fpu */ { 1 } else {  0 }) |      // fpu
                     vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
                     1 << 8 | 1 << 11 | 1 << 13 | 1 << 15 | // cx8, sep, pge, cmov
+                    1 << 16 | 1 << 19 | // pat, clflush
+
                     1 << 23 | 1 << 24 | 1 << 25 | 1 << 26; // mmx, fxsr, sse1, sse2
 
             if *acpi_enabled
@@ -3377,6 +3379,11 @@ pub unsafe fn instr_0FA2() {
             edx = 1 << 20; // nx
             if config::ENABLE_LONG_MODE {
                 edx |= 1 << 29; // lm
+                // syscall and sysret. Windows makes every system call through syscall, so a
+                // processor that does not advertise it is of no use to the kernel whatever else it
+                // supports. They were implemented earlier without this bit ever being set, which is
+                // the same mistake as advertising something unimplemented, in the other direction.
+                edx |= 1 << 11;
                 ecx |= 1 << 0; // lahf/sahf in 64-bit mode
                 // prefetchw. Windows 8.1 and later check for this before they will boot at all,
                 // alongside cmpxchg16b and lahf/sahf - a kernel that does not find it bugchecks
@@ -3624,8 +3631,9 @@ pub unsafe fn instr_0FAE_7_reg(_r: i32) {
 }
 #[no_mangle]
 pub unsafe fn instr_0FAE_7_mem(_addr: i32) {
-    // clflush
-    undefined_instruction();
+    // clflush. There is no cache here to flush a line out of, so the whole instruction is the
+    // address calculation the caller already did. It is a no-op rather than undefined because
+    // cpuid now advertises it, and advertising something that traps is how a guest gets broken.
 }
 pub unsafe fn instr16_0FAF_mem(addr: i32, r: i32) {
     write_reg16(
