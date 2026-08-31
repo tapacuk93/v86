@@ -1,0 +1,7 @@
+; What long-mode-mtrr.asm leaves behind.
+r8  = 1                    ; cpuid advertises mtrr
+r9  = 508                  ; eight variable ranges, fixed ranges, write combining
+r10 = f00000006            ; a variable range register round trips at full width
+r11 = 606060606060606      ; and a fixed range one
+r12 = c00                  ; and the default type
+r13 = f87654321            ; and the last of the sixteen variable range registers

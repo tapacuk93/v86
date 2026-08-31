@@ -1181,6 +1181,34 @@ pub unsafe fn instr_660F2F_mem(addr: i32, r: i32) {
     instr_660F2F(return_on_pagefault!(safe_read64s(addr)), r)
 }
 
+/// Storage for the memory type range registers.
+///
+/// Nothing here interprets them: this emulator has no caches, so every memory type behaves the
+/// same and the registers only have to read back what was written. A guest is entitled to that
+/// much once cpuid says mtrr exists, and windows will not run on a processor that says it does
+/// not. Sixteen variable range registers, eleven fixed range ones, and the default type.
+static mut MTRR: [u64; 28] = [0; 28];
+
+/// The index into MTRR for an msr, or None if it is not one of them.
+fn mtrr_slot(index: i32) -> Option<usize> {
+    match index {
+        IA32_MTRR_PHYSBASE0..=IA32_MTRR_PHYSMASK7 => {
+            Some((index - IA32_MTRR_PHYSBASE0) as usize)
+        },
+        IA32_MTRR_FIX64K_00000 => Some(16),
+        IA32_MTRR_FIX16K_80000 => Some(17),
+        IA32_MTRR_FIX16K_A0000 => Some(18),
+        IA32_MTRR_FIX4K_C0000..=IA32_MTRR_FIX4K_F8000 => {
+            Some(19 + (index - IA32_MTRR_FIX4K_C0000) as usize)
+        },
+        IA32_MTRR_DEF_TYPE => Some(27),
+        _ => None,
+    }
+}
+
+unsafe fn mtrr_read(slot: usize) -> u64 { *(&raw const MTRR as *const u64).add(slot) }
+unsafe fn mtrr_write(slot: usize, value: u64) { *(&raw mut MTRR as *mut u64).add(slot) = value }
+
 #[no_mangle]
 pub unsafe fn instr_0F30() {
     // wrmsr - write maschine specific register
@@ -1252,6 +1280,9 @@ pub unsafe fn instr_0F30() {
             // Enable Misc. Processor Features
         },
         IA32_MCG_CAP => {}, // netbsd
+        _ if mtrr_slot(index).is_some() => {
+            mtrr_write(mtrr_slot(index).unwrap(), (high as u64) << 32 | low as u32 as u64)
+        },
         IA32_STAR => *star = (high as i64) << 32 | (low as u32 as i64),
         IA32_LSTAR => *lstar = (high as i64) << 32 | (low as u32 as i64),
         IA32_CSTAR => *cstar = (high as i64) << 32 | (low as u32 as i64),
@@ -1314,6 +1345,13 @@ pub unsafe fn instr_0F32() {
             high = (tsc >> 32) as i32
         },
         IA32_EFER => low = *efer,
+        // Eight variable ranges, the fixed ranges, and write combining
+        IA32_MTRRCAP => low = 8 | 1 << 8 | 1 << 10,
+        _ if mtrr_slot(index).is_some() => {
+            let v = mtrr_read(mtrr_slot(index).unwrap());
+            low = v as i32;
+            high = (v >> 32) as i32;
+        },
         IA32_FS_BASE | IA32_GS_BASE | IA32_KERNEL_GS_BASE | IA32_STAR | IA32_LSTAR | IA32_CSTAR
         | IA32_FMASK => {
             let value = match index {
@@ -3290,7 +3328,16 @@ pub unsafe fn instr_0FA2() {
         },
 
         1 => {
-            eax = 3 | 7 << 4 | 6 << 8; // pentium3
+            // The processor signature. A long mode build reports something that could plausibly
+            // have the features it advertises: a pentium 3 signature alongside sse2, cmpxchg16b,
+            // syscall and long mode is a combination no real processor ever had, and windows does
+            // not have to accept it.
+            eax = if config::ENABLE_LONG_MODE {
+                0x000306A9 // family 6, extended model 3, model a, stepping 9
+            }
+            else {
+                3 | 7 << 4 | 6 << 8 // pentium3
+            };
             ebx = 1 << 16 | 8 << 8; // cpu count, clflush size
             ecx = 1 << 0 | 1 << 23 | 1 << 30; // sse3, popcnt, rdrand
             if config::ENABLE_LONG_MODE {
@@ -3300,13 +3347,14 @@ pub unsafe fn instr_0FA2() {
                 ecx |= 1 << 13;
             }
             let vme = 0 << 1;
-            if config::VMWARE_HYPERVISOR_PORT {
+            if config::VMWARE_HYPERVISOR_PORT && !config::ENABLE_LONG_MODE {
                 ecx |= 1 << 31
             }; // hypervisor
             edx = (if true /* have fpu */ { 1 } else {  0 }) |      // fpu
                     vme | 1 << 3 | 1 << 4 | 1 << 5 | 1 << 6 |  // vme, pse, tsc, msr, pae
                     1 << 8 | 1 << 11 | 1 << 13 | 1 << 15 | // cx8, sep, pge, cmov
                     1 << 16 | 1 << 19 | // pat, clflush
+                    1 << 2 | 1 << 12 | 1 << 17 | // de, mtrr, pse-36
 
                     1 << 23 | 1 << 24 | 1 << 25 | 1 << 26; // mmx, fxsr, sse1, sse2
 

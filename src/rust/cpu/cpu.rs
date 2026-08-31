@@ -242,6 +242,19 @@ pub const IA32_PAT: i32 = 0x277;
 pub const IA32_RTIT_CTL: i32 = 0x570;
 pub const MSR_PKG_C2_RESIDENCY: i32 = 0x60D;
 pub const IA32_EFER: i32 = 0xC0000080u32 as i32;
+/// The memory type range registers. Nothing here acts on them - there are no caches to give a
+/// memory type to - but a processor that advertises mtrr must let a guest read and write them, and
+/// windows expects the feature on anything it will run on.
+pub const IA32_MTRRCAP: i32 = 0xFE;
+pub const IA32_MTRR_PHYSBASE0: i32 = 0x200;
+pub const IA32_MTRR_PHYSMASK7: i32 = 0x20F;
+pub const IA32_MTRR_FIX64K_00000: i32 = 0x250;
+pub const IA32_MTRR_FIX16K_80000: i32 = 0x258;
+pub const IA32_MTRR_FIX16K_A0000: i32 = 0x259;
+pub const IA32_MTRR_FIX4K_C0000: i32 = 0x268;
+pub const IA32_MTRR_FIX4K_F8000: i32 = 0x26F;
+pub const IA32_MTRR_DEF_TYPE: i32 = 0x2FF;
+
 pub const IA32_STAR: i32 = 0xC0000081u32 as i32;
 pub const IA32_LSTAR: i32 = 0xC0000082u32 as i32;
 pub const IA32_CSTAR: i32 = 0xC0000083u32 as i32;
