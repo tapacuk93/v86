@@ -118,6 +118,7 @@ const ATA_CMD_READ_VERIFY_SECTORS = 0x40;             // see [ATA8-ACS] 7.32
 const ATA_CMD_SECURITY_FREEZE_LOCK = 0xF5;            // see [ATA8-ACS] 7.40
 const ATA_CMD_SET_FEATURES = 0xEF;                    // see [ATA8-ACS] 7.45
 const ATA_CMD_SET_MAX = 0xF9;                         // see [ATA-6] 8.47
+const ATA_CMD_READ_LOG_EXT = 0x2F;                    // see [ATA8-ACS] 7.22
 const ATA_CMD_SET_MULTIPLE_MODE = 0xC6;               // see [ATA8-ACS] 7.46
 const ATA_CMD_STANDBY_IMMEDIATE = 0xE0;               // see [ATA8-ACS] 7.50
 const ATA_CMD_WRITE_DMA = 0xCA;                       // see [ATA8-ACS] 7.58
@@ -155,6 +156,7 @@ const ATA_CMD_NAME =
     [ATA_CMD_SECURITY_FREEZE_LOCK]:         "SECURITY FREEZE LOCK",
     [ATA_CMD_SET_FEATURES]:                 "SET FEATURES",
     [ATA_CMD_SET_MAX]:                      "SET MAX",
+    [ATA_CMD_READ_LOG_EXT]:                 "READ LOG EXT",
     [ATA_CMD_SET_MULTIPLE_MODE]:            "SET MULTIPLE MODE",
     [ATA_CMD_STANDBY_IMMEDIATE]:            "STANDBY IMMEDIATE",
     [ATA_CMD_WRITE_DMA]:                    "WRITE DMA",
@@ -1410,6 +1412,13 @@ IDEInterface.prototype.ata_command = function(cmd)
             break;
 
         case ATA_CMD_NOP:
+            this.ata_abort_command();
+            break;
+
+        case ATA_CMD_READ_LOG_EXT:
+            // The general purpose log, which carries the self test and error logs. Aborting is a
+            // legitimate answer from a device that keeps none: windows asks for it while bringing
+            // a disk up and carries on without it.
             this.ata_abort_command();
             break;
 
