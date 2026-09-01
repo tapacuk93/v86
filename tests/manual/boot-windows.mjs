@@ -195,6 +195,11 @@ emulator.add_listener("emulator-loaded", async () => {
         reboots++;
         note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** RESET #${reboots} ` +
              `(from eip=${state().eip}, 64=${state().is_64})`);
+        // Whatever is on screen now is the reason: windows draws its bugcheck screen, which names
+        // the stop code, and then restarts itself. One instruction later the framebuffer is gone,
+        // so this is the only moment the screen can be read.
+        try { screenshot(`reset-${reboots}`); }
+        catch(e) { note("  could not capture the screen at reset: " + e); }
         return reboot();
     };
 });
