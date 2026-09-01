@@ -911,7 +911,19 @@ unsafe fn cmpxchg_double(addr: i64, osize: i32) {
 /// is what makes these restartable - so they are written back each time round rather than at the
 /// end.
 unsafe fn string_op(opcode: i32, osize: i32) -> bool {
-    let width = if opcode & 1 == 0 { 8 } else { osize };
+    // ins and outs move a byte, word or dword through a port. There is no 64-bit form of either:
+    // rex.w does not widen them, so the operand size stops at 32 however the instruction is
+    // encoded. Windows reaches these driving an ide disk by programmed io.
+    let port_io = matches!(opcode, 0x6C..=0x6F);
+    let width = if opcode & 1 == 0 {
+        8
+    }
+    else if port_io {
+        osize.min(32)
+    }
+    else {
+        osize
+    };
     let bytes = (width / 8) as i64;
     let step = if 0 != *flags & FLAG_DIRECTION { -bytes } else { bytes };
 
@@ -923,6 +935,13 @@ unsafe fn string_op(opcode: i32, osize: i32) -> bool {
     let compares = matches!(opcode, 0xA6 | 0xA7 | 0xAE | 0xAF);
     // The rsi side only; the rdi side is es, which cannot be overridden and has no base here.
     let src_base = seg_base64();
+
+    // dx holds the port for the whole run, and the privileges are those of the instruction rather
+    // than of each iteration.
+    let port = read_reg16(EDX);
+    if port_io && !test_privileges_for_io(port, width / 8) {
+        return true;
+    }
 
     unsafe fn read_at(addr: i64, width: i32) -> OrPageFault<i64> {
         Ok(match width {
@@ -951,6 +970,29 @@ unsafe fn string_op(opcode: i32, osize: i32) -> bool {
 
         let result = (|| -> OrPageFault<()> {
             match opcode {
+                // ins, from the port into es:rdi. The destination is translated before the port is
+                // read, because a fault after the read would drop the data with nowhere to put it
+                // back - the port has already moved on.
+                0x6C | 0x6D => {
+                    translate_address_write64(rdi)?;
+                    let v = match width {
+                        8 => io_port_read8(port) as i64,
+                        16 => io_port_read16(port) as i64,
+                        _ => io_port_read32(port) as u32 as i64,
+                    };
+                    write_at(rdi, v, width)?;
+                    write_reg64(EDI, rdi + step);
+                },
+                // outs, the other way, out of ds:rsi and so with a segment prefix honoured
+                0x6E | 0x6F => {
+                    let v = read_at(src_base + rsi, width)?;
+                    match width {
+                        8 => io_port_write8(port, v as i32 & 0xFF),
+                        16 => io_port_write16(port, v as i32 & 0xFFFF),
+                        _ => io_port_write32(port, v as i32),
+                    }
+                    write_reg64(ESI, rsi + step);
+                },
                 // movs
                 0xA4 | 0xA5 => {
                     let v = read_at(src_base + rsi, width)?;
@@ -2802,7 +2844,8 @@ pub unsafe fn run(opcode: i32) -> bool {
 
         // ret
         // the string instructions, with or without a rep prefix
-        0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAC | 0xAD | 0xAE | 0xAF => {
+        0x6C | 0x6D | 0x6E | 0x6F | 0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAC | 0xAD
+        | 0xAE | 0xAF => {
             string_op(opcode, osize)
         },
 
@@ -3688,7 +3731,7 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         //
         // pshufd, movq, movntdq and pmovmskb are what an sse2 memcpy, memset and string search are
         // built out of, so a 64-bit guest reaches them almost immediately.
-        0x50 | 0x70 | 0xD6 | 0xD7 | 0xE7 => {
+        0x50 | 0x70 | 0xC5 | 0xD6 | 0xD7 | 0xE7 => {
             use crate::cpu::instructions_0f as i;
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
@@ -3721,6 +3764,31 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                         return true;
                     }
                     write_reg_sized(r, i::instr_660FD7(modrm_rm(modrm_byte)) as u32 as i64, 32);
+                },
+
+                // pextrw, one word out of an mmx or xmm register and into a general one. The
+                // source is a register in both forms: the memory form of this opcode is #ud.
+                0xC5 => {
+                    if modrm_byte < 0xC0 {
+                        dbg_log!("#ud pextrw with a memory operand");
+                        trigger_ud();
+                        return true;
+                    }
+                    let rm = modrm_rm(modrm_byte);
+                    let imm = match read_imm8() {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    };
+                    if has_66 {
+                        i::instr_660FC5_reg(rm, r, imm)
+                    }
+                    else {
+                        // rex.b does not extend an mmx operand - there are only eight of those -
+                        // though it does extend the xmm one above.
+                        i::instr_0FC5_reg(rm & 7, r, imm)
+                    }
+                    // Both answer through write_reg32, which leaves the upper half alone.
+                    zero_extend_regs(&[r]);
                 },
 
                 // pshufd, pshufhw and pshuflw, which carry an immediate after the modrm - so the
