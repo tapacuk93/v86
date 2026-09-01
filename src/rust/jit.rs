@@ -191,6 +191,12 @@ fn check_jit_state_invariants(ctx: &mut JitState) {
 
     for i in 0..unsafe { cpu::valid_tlb_entries_count } {
         let page = unsafe { cpu::valid_tlb_entries[i as usize] };
+        // tlb_code covers only the low slots. In 64-bit mode the jit compiles nothing, so a
+        // page in the high half never has code of its own, and its slot index - which is a
+        // fold of the page number rather than the page itself - does not index tlb_code.
+        if page as usize >= cpu::TLB_LOW_SLOTS {
+            continue;
+        }
         let entry = unsafe { cpu::tlb_data[page as usize] };
         if 0 != entry {
             let tlb_physical_page = Page::of_u32(
@@ -1107,6 +1113,12 @@ pub fn codegen_finalize_finished(
 
     for i in 0..unsafe { cpu::valid_tlb_entries_count } {
         let page = unsafe { cpu::valid_tlb_entries[i as usize] };
+        // tlb_code covers only the low slots. In 64-bit mode the jit compiles nothing, so a
+        // page in the high half never has code of its own, and its slot index - which is a
+        // fold of the page number rather than the page itself - does not index tlb_code.
+        if page as usize >= cpu::TLB_LOW_SLOTS {
+            continue;
+        }
         let entry = unsafe { cpu::tlb_data[page as usize] };
         if 0 != entry {
             let tlb_physical_page = Page::of_u32(
@@ -2218,6 +2230,12 @@ fn free_wasm_table_index(ctx: &mut JitState, wasm_table_index: WasmTableIndex) {
 
         for i in 0..unsafe { cpu::valid_tlb_entries_count } {
             let page = unsafe { cpu::valid_tlb_entries[i as usize] };
+            // tlb_code covers only the low slots. In 64-bit mode the jit compiles nothing, so a
+            // page in the high half never has code of its own, and its slot index - which is a
+            // fold of the page number rather than the page itself - does not index tlb_code.
+            if page as usize >= cpu::TLB_LOW_SLOTS {
+                continue;
+            }
             unsafe {
                 match cpu::tlb_code[page as usize] {
                     None => {},
@@ -2281,6 +2299,12 @@ fn jit_dirty_page_ctx(ctx: &mut JitState, page: Page) {
 
             for i in 0..unsafe { cpu::valid_tlb_entries_count } {
                 let page = unsafe { cpu::valid_tlb_entries[i as usize] };
+                // tlb_code covers only the low slots. In 64-bit mode the jit compiles nothing, so a
+                // page in the high half never has code of its own, and its slot index - which is a
+                // fold of the page number rather than the page itself - does not index tlb_code.
+                if page as usize >= cpu::TLB_LOW_SLOTS {
+                    continue;
+                }
                 let entry = unsafe { cpu::tlb_data[page as usize] };
                 if 0 != entry {
                     let tlb_physical_page = Page::of_u32(
