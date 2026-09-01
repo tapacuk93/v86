@@ -1,0 +1,9 @@
+; What long-mode-loop.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x5                  ; loop ran the count out
+r9  = 0x4                  ; loope ran while zf stayed set, until the count went
+r10 = 0x1                  ; loopne stopped on the first zf
+r11 = 0x8                  ; with the count decremented once and abandoned
+r12 = 0x1                  ; jrcxz jumped on a zero count
+r13 = 0x0                  ; and did not decrement it
+r14 = 0x1                  ; the count is rcx: 0x100000001 does not reach zero in one turn
+r15 = 0x100000000          ; and the whole register was decremented
