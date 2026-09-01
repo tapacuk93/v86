@@ -1,0 +1,4 @@
+; What long-mode-crc32.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0xe3069283           ; the published crc-32c check value for "123456789"
+r9  = 0x0                  ; the 64-bit form agrees with eight byte-sized steps
+r10 = 0x0                  ; and the result zero extends, leaving nothing above bit 31

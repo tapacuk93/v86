@@ -1456,6 +1456,47 @@ unsafe fn fpu_mem_form(opcode: i32, group: i32, addr: i64) -> bool {
     true
 }
 
+/// crc32, which accumulates the castagnoli polynomial rather than the one every other crc32 uses.
+///
+/// Intel defines it by reflecting both operands, dividing by 0x11EDC6F41 and reflecting the result
+/// back. The two reflections cancel into the ordinary bit-at-a-time loop below, where each byte
+/// enters at the bottom and the value shifts down - which is why the constant here is the reversed
+/// polynomial and not the one in the manual.
+///
+/// The accumulator is 32 bits whatever the destination register's width: the r64 form zero extends,
+/// so the top half of the register always ends up clear.
+unsafe fn crc32_op(opcode3: i32, osize: i32) -> bool {
+    let modrm_byte = match read_imm8() {
+        Ok(o) => o,
+        Err(()) => return true,
+    };
+    let r = modrm_reg(modrm_byte);
+    // f0 takes a byte however the operand size is encoded; f1 follows the operand size
+    let width = if opcode3 == 0xF0 { 8 } else { osize };
+    let source = if width == 8 {
+        match read_rm8(modrm_byte) {
+            Ok(v) => v as i64 & 0xFF,
+            Err(()) => return true,
+        }
+    }
+    else {
+        match read_rm(modrm_byte, width) {
+            Ok(v) => v,
+            Err(()) => return true,
+        }
+    };
+
+    let mut crc = read_reg64(r) as u32;
+    for i in 0..width / 8 {
+        crc ^= (source >> (8 * i)) as u32 & 0xFF;
+        for _ in 0..8 {
+            crc = crc >> 1 ^ if crc & 1 != 0 { 0x82F6_3B78 } else { 0 };
+        }
+    }
+    write_reg_sized(r, crc as i64, 32);
+    true
+}
+
 /// Zero extend the results of an instruction delegated to its 32-bit implementation.
 ///
 /// write_reg32 leaves the upper half of the register alone, which is right in 32-bit mode - there
@@ -2403,6 +2444,31 @@ pub unsafe fn run(opcode: i32) -> bool {
                 Ok(o) => o,
                 Err(()) => return true,
             };
+            // 0f 38 and 0f 3a are escapes of their own, and an unimplemented one of those has
+            // to name its third byte: "0f 38" on its own describes a couple of hundred
+            // instructions and says nothing about which is missing.
+            if opcode2 == 0x38 || opcode2 == 0x3A {
+                let opcode3 = match read_imm8() {
+                    Ok(o) => o,
+                    Err(()) => return true,
+                };
+                if opcode2 == 0x38
+                    && (opcode3 == 0xF0 || opcode3 == 0xF1)
+                    && 0 != *prefixes & crate::prefix::PREFIX_F2
+                {
+                    return crc32_op(opcode3, osize);
+                }
+                dbg_assert!(
+                    false,
+                    "Unimplemented 64-bit instruction: 0f {:02x} {:02x} rex={:02x} prefixes={:02x} eip={:x}",
+                    opcode2,
+                    opcode3,
+                    *rex,
+                    *prefixes,
+                    *previous_ip
+                );
+                return false;
+            }
             let handled = run_0f(opcode2, osize);
             if !handled {
                 // Reported here rather than by the caller, which only knows about the escape and
@@ -2918,6 +2984,33 @@ pub unsafe fn run(opcode: i32) -> bool {
                     }
                 },
                 Err(()) => {},
+            }
+            after_block_boundary();
+            true
+        },
+
+        // loop, loope, loopne and jrcxz, which count in rcx rather than in ecx: the address size
+        // chooses the counter, and 64 is the default in long mode. Only jrcxz leaves it alone.
+        0xE0..=0xE3 => {
+            let offset = match read_imm8s() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let take = if opcode == 0xE3 {
+                read_reg64(ECX) == 0
+            }
+            else {
+                let count = read_reg64(ECX).wrapping_sub(1);
+                write_reg64(ECX, count);
+                count != 0
+                    && match opcode {
+                        0xE0 => !getzf(),
+                        0xE1 => getzf(),
+                        _ => true,
+                    }
+            };
+            if take {
+                *instruction_pointer = (*instruction_pointer).wrapping_add(offset as i64);
             }
             after_block_boundary();
             true
