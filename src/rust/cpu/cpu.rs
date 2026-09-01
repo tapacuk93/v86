@@ -2430,6 +2430,15 @@ pub unsafe fn translate_address(
 /// 32 bits take part in that xor, which is what lets the same entry format serve addresses that do
 /// not fit in 32 bits: the bits above the page offset cancel either way.
 #[inline(always)]
+/// A linear address is canonical when bits 63 down to 48 all copy bit 47: the 64-bit address space
+/// has a hole in the middle, and only the low and high ends of it exist. Referencing an address in
+/// that hole is #gp(0), never a page fault, and windows tells the two apart - a page fault at an
+/// address that could not be mapped by anything is PAGE_FAULT_IN_NONPAGED_AREA, where the general
+/// protection fault it expected would have been handled and recovered from.
+///
+/// A 32-bit guest's addresses are all below 2^32 and so always pass.
+pub fn is_canonical(address: i64) -> bool { address << 16 >> 16 == address }
+
 pub unsafe fn translate_address64(
     address: i64,
     for_writing: bool,
@@ -2438,6 +2447,12 @@ pub unsafe fn translate_address64(
     jit: bool,
     side_effects: bool,
 ) -> OrPageFault<u32> {
+    if !is_canonical(address) {
+        if side_effects {
+            trigger_gp(0);
+        }
+        return Err(());
+    }
     let mut entry = tlb_entry_of(address);
     if entry
         & (TLB_VALID
@@ -2458,6 +2473,10 @@ pub unsafe fn translate_address_write_and_can_skip_dirty(address: i32) -> OrPage
 pub unsafe fn translate_address_write_and_can_skip_dirty64(
     address: i64,
 ) -> OrPageFault<(u32, bool)> {
+    if !is_canonical(address) {
+        trigger_gp(0);
+        return Err(());
+    }
     let mut entry = tlb_entry_of(address);
     let user = *cpl == 3;
     if entry & (TLB_VALID | if user { TLB_NO_USER } else { 0 } | TLB_READONLY) != TLB_VALID {
