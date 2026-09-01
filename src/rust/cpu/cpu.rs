@@ -234,6 +234,15 @@ pub const MISC_FEATURE_ENABLES: i32 = 0x140;
 pub const IA32_SYSENTER_CS: i32 = 0x174;
 pub const IA32_SYSENTER_ESP: i32 = 0x175;
 pub const IA32_SYSENTER_EIP: i32 = 0x176;
+/// The part of a 64-bit paging entry above 32 bits that is an address, and so has to be zero for a
+/// guest whose memory fits in 4 GiB. Bits 52 to 62 are not: they are available to software, and
+/// 64-bit windows keeps its own bookkeeping there, so they say nothing about how wide the address
+/// is. Bit 63 is nx, which is read from the full width entry before it is narrowed to 32 bits.
+///
+/// Only meaningful for a present entry. Windows encodes what it needs to find a page again - a
+/// pagefile offset, a pointer to a prototype pte - in entries whose present bit is clear, and
+/// none of that is an address.
+pub const PAGE_ENTRY_ADDRESS_ABOVE_32: u64 = 0x000F_FFFF_0000_0000;
 pub const IA32_MCG_CAP: i32 = 0x179;
 pub const IA32_MCG_STATUS: i32 = 0x17A;
 pub const IA32_MCG_CTL: i32 = 0x17B;
@@ -2582,8 +2591,9 @@ pub unsafe fn do_page_walk(
                 (pdpt_entry as u32 & 0xFFFFF000) + ((((addr as u32) >> 21) & 0x1FF) << 3);
             let page_dir_entry = memory::read64s(page_dir_addr);
             dbg_assert!(
-                page_dir_entry as u64 & 0x7FFF_FFFF_0000_0000 == 0,
-                "Unsupported: Page directory entry larger than 32 bits"
+                page_dir_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0
+                    || page_dir_entry as u64 & PAGE_ENTRY_ADDRESS_ABOVE_32 == 0,
+                "Unsupported: Page directory entry addresses above 4 GiB"
             );
 
             if check_paging_entry_nx(page_dir_entry, nxe, &mut allow_exec) {
@@ -2608,8 +2618,9 @@ pub unsafe fn do_page_walk(
                 (pdpt_entry as u32 & 0xFFFFF000) + ((((addr as u32) >> 21) & 0x1FF) << 3);
             let page_dir_entry = memory::read64s(page_dir_addr);
             dbg_assert!(
-                page_dir_entry as u64 & 0x7FFF_FFFF_0000_0000 == 0,
-                "Unsupported: Page directory entry larger than 32 bits"
+                page_dir_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0
+                    || page_dir_entry as u64 & PAGE_ENTRY_ADDRESS_ABOVE_32 == 0,
+                "Unsupported: Page directory entry addresses above 4 GiB"
             );
 
             if check_paging_entry_nx(page_dir_entry, nxe, &mut allow_exec) {
@@ -2678,8 +2689,9 @@ pub unsafe fn do_page_walk(
                     (page_dir_entry as u32 & 0xFFFFF000) + (((addr as u32 >> 12) & 0x1FF) << 3);
                 let page_table_entry = memory::read64s(page_table_addr);
                 dbg_assert!(
-                    page_table_entry as u64 & 0x7FFF_FFFF_0000_0000 == 0,
-                    "Unsupported: Page table entry larger than 32 bits"
+                    page_table_entry as i32 & PAGE_TABLE_PRESENT_MASK == 0
+                        || page_table_entry as u64 & PAGE_ENTRY_ADDRESS_ABOVE_32 == 0,
+                    "Unsupported: Page table entry addresses above 4 GiB"
                 );
 
                 if check_paging_entry_nx(page_table_entry, nxe, &mut allow_exec) {
