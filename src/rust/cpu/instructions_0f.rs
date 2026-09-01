@@ -1280,6 +1280,8 @@ pub unsafe fn instr_0F30() {
             // Enable Misc. Processor Features
         },
         IA32_MCG_CAP => {}, // netbsd
+        IA32_MCG_STATUS | IA32_MCG_CTL => {},
+        _ if (IA32_MC0_CTL..IA32_MC_END).contains(&index) => {},
         _ if mtrr_slot(index).is_some() => {
             mtrr_write(mtrr_slot(index).unwrap(), (high as u64) << 32 | low as u32 as u64)
         },
@@ -1387,6 +1389,8 @@ pub unsafe fn instr_0F32() {
         IA32_RTIT_CTL => {}, // linux4
         MSR_SMI_COUNT => {},
         IA32_MCG_CAP => {},                        // netbsd
+        IA32_MCG_STATUS | IA32_MCG_CTL => {},
+        _ if (IA32_MC0_CTL..IA32_MC_END).contains(&index) => {},
         IA32_PERFEVTSEL0 | IA32_PERFEVTSEL1 => {}, // linux/9legacy
         IA32_PMC0 | IA32_PMC1 => {},               // linux
         IA32_PAT => {},
@@ -3357,6 +3361,15 @@ pub unsafe fn instr_0FA2() {
                     1 << 2 | 1 << 12 | 1 << 17 | // de, mtrr, pse-36
 
                     1 << 23 | 1 << 24 | 1 << 25 | 1 << 26; // mmx, fxsr, sse1, sse2
+
+            if config::ENABLE_LONG_MODE {
+                // Machine check. Windows folds these into the same masked comparison as the rest
+                // of the leaf, so their absence is indistinguishable from any other missing
+                // feature and stops the boot with UNSUPPORTED_PROCESSOR before anything is drawn.
+                // Nothing here ever reports an error: mcg_cap says there are no banks, so there
+                // is nothing for the guest to clear and no #mc is ever raised.
+                edx |= 1 << 7 | 1 << 14; // mce, mca
+            }
 
             if *acpi_enabled
             //&& this.apic_enabled[0])

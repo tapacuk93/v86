@@ -1,0 +1,8 @@
+; What long-mode-x87-state.asm leaves behind. The values here are hex, as everywhere in these
+; files, so the integers pushed onto the stack read back as d, b and 7.
+r8  = 0x37f                ; fnsave initialises the state it saved, so the control word resets
+r9  = 0xd                  ; 13, the stack frstor brought back, in the order it was pushed
+r10 = 0xb                  ; 11
+r11 = 0x7                  ; 7
+r12 = 0x3                  ; 3.75 truncated toward zero, not rounded to 4
+r13 = 0xfffffffffffffffd   ; -3.75 likewise gives -3, not -4

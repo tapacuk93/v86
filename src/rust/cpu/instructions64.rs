@@ -1196,6 +1196,34 @@ unsafe fn fpu_store_m64_64(addr: i64, x: F80) -> OrPageFault<()> {
     safe_write64_64(addr, x.to_f64())
 }
 
+/// The protected-mode 32-bit environment layout, at a full 64-bit address. Long mode has no
+/// separate form of its own: rex.w on fnsave/frstor selects this same 28-byte header.
+unsafe fn fpu_stenv32_64(addr: i64) -> OrPageFault<()> {
+    use crate::cpu::fpu::*;
+    let high_bits = 0xFFFF0000u32 as i32;
+    safe_write32_64(addr + 0, high_bits + *fpu_control_word as i32)?;
+    safe_write32_64(addr + 4, high_bits + fpu_load_status_word() as i32)?;
+    safe_write32_64(addr + 8, high_bits + fpu_load_tag_word())?;
+    safe_write32_64(addr + 12, *fpu_ip)?;
+    safe_write16_64(addr + 16, *fpu_ip_selector)?;
+    safe_write16_64(addr + 18, *fpu_opcode)?;
+    safe_write32_64(addr + 20, *fpu_dp)?;
+    safe_write32_64(addr + 24, high_bits | *fpu_dp_selector)
+}
+
+unsafe fn fpu_ldenv32_64(addr: i64) -> OrPageFault<()> {
+    use crate::cpu::fpu::*;
+    set_control_word(safe_read16_64(addr)? as u16);
+    fpu_set_status_word(safe_read16_64(addr + 4)? as u16);
+    fpu_set_tag_word(safe_read16_64(addr + 8)?);
+    *fpu_ip = safe_read32s_64(addr + 12)?;
+    *fpu_ip_selector = safe_read16_64(addr + 16)?;
+    *fpu_opcode = safe_read16_64(addr + 18)?;
+    *fpu_dp = safe_read32s_64(addr + 20)?;
+    *fpu_dp_selector = safe_read16_64(addr + 24)?;
+    Ok(())
+}
+
 unsafe fn fpu_store_m80_64(addr: i64, x: F80) -> OrPageFault<()> {
     safe_write64_64(addr, x.mantissa)?;
     safe_write16_64(addr + 8, x.sign_exponent as i32)
@@ -1222,8 +1250,9 @@ unsafe fn fpu_reg_form(opcode: i32, group: i32, rm: i32) {
 /// The memory form. Written out rather than delegated because every 32-bit implementation takes an
 /// i32 address, and a kernel's operands are nowhere near the low 4 GiB.
 ///
-/// Returns false for the shapes still missing - the environment and state save areas, the packed
-/// decimal pair, and fisttp - so that they trap by name rather than doing something wrong quietly.
+/// Returns false for the shapes still missing - fldenv and fnstenv, the packed decimal pair, and
+/// fisttp at the two narrower widths - so that they trap by name rather than doing something wrong
+/// quietly. The state save areas are here now: 64-bit windows reaches fnsave and frstor early.
 unsafe fn fpu_mem_form(opcode: i32, group: i32, addr: i64) -> bool {
     use crate::cpu::fpu::*;
 
@@ -1331,6 +1360,47 @@ unsafe fn fpu_mem_form(opcode: i32, group: i32, addr: i64) -> bool {
                 fpu_pop();
             }
         },
+        // fisttp, which truncates whatever the rounding mode says. Advertising sse3 is what
+        // makes a compiler emit this in place of the fnstcw/fldcw dance around fistp.
+        (0xDD, 1) => {
+            let v = fpu_truncate_to_i64(fpu_get_st0());
+            if safe_write64_64(addr, v as u64).is_ok() {
+                fpu_pop();
+            }
+        },
+
+        // fnsave and frstor, the whole x87 state through memory: the protected-mode 32-bit
+        // environment followed by the eight registers in stack order. A fault partway through
+        // leaves the state it has not reached alone, and the guest re-executes from the start.
+        (0xDD, 6) => {
+            if fpu_stenv32_64(addr).is_err() {
+                return true;
+            }
+            let mut at = addr + 28;
+            for i in 0..8 {
+                let reg_index = i + *fpu_stack_ptr as i32 & 7;
+                if fpu_store_m80_64(at, *fpu_st.offset(reg_index as isize)).is_err() {
+                    return true;
+                }
+                at += 10;
+            }
+            fpu_finit();
+        },
+        (0xDD, 4) => {
+            if fpu_ldenv32_64(addr).is_err() {
+                return true;
+            }
+            let mut at = addr + 28;
+            for i in 0..8 {
+                let reg_index = *fpu_stack_ptr as i32 + i & 7;
+                match fpu_load_m80_64(at) {
+                    Ok(v) => *fpu_st.offset(reg_index as isize) = v,
+                    Err(()) => return true,
+                }
+                at += 10;
+            }
+        },
+
         // fnstsw, the status word to memory
         (0xDD, 7) => {
             let _ = safe_write16_64(addr, fpu_load_status_word() as i32);
@@ -2321,6 +2391,15 @@ pub unsafe fn run(opcode: i32) -> bool {
             let tmp = sized(read_reg64(EAX), osize);
             write_reg_sized(EAX, sized(read_reg64(reg), osize), osize);
             write_reg_sized(reg, tmp, osize);
+            true
+        },
+
+        // fwait, which is a whole instruction rather than a prefix: an x87 mnemonic beginning
+        // with f rather than fn assembles as this followed by the escape, so finit and fstsw and
+        // their kin reach it before they reach anything else. It takes no operand and behaves the
+        // same at any width, so the 32-bit implementation is the implementation.
+        0x9B => {
+            crate::cpu::instructions::instr_9B();
             true
         },
 

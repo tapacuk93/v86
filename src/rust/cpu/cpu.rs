@@ -235,6 +235,11 @@ pub const IA32_SYSENTER_CS: i32 = 0x174;
 pub const IA32_SYSENTER_ESP: i32 = 0x175;
 pub const IA32_SYSENTER_EIP: i32 = 0x176;
 pub const IA32_MCG_CAP: i32 = 0x179;
+pub const IA32_MCG_STATUS: i32 = 0x17A;
+pub const IA32_MCG_CTL: i32 = 0x17B;
+/// The per-bank machine check registers, four to a bank, for as many banks as mcg_cap reports.
+pub const IA32_MC0_CTL: i32 = 0x400;
+pub const IA32_MC_END: i32 = IA32_MC0_CTL + 4 * 32;
 pub const IA32_PERFEVTSEL0: i32 = 0x186;
 pub const IA32_PERFEVTSEL1: i32 = 0x187;
 pub const IA32_MISC_ENABLE: i32 = 0x1A0;
