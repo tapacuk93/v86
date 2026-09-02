@@ -119,6 +119,24 @@ if(DETERMINISTIC)
     const epoch = Date.UTC(2026, 0, 1, 12, 0, 0);
     v86.microtick = virtual_ms;
     Date.now = () => epoch + virtual_ms();
+
+    // And the other way entropy gets in. cpuid advertises rdrand, so windows seeds itself from it,
+    // and v86 answers out of crypto.getRandomValues - which is real randomness and so is the one
+    // thing left that differs between two runs of the same image. A seeded generator answers the
+    // same sequence every time, which is what makes the boot repeatable rather than merely similar.
+    let seed = 0x2545f491;
+    const next = () => {
+        seed ^= seed << 13; seed >>>= 0;
+        seed ^= seed >>> 17;
+        seed ^= seed << 5;  seed >>>= 0;
+        return seed | 0;
+    };
+    const fill = arr => {
+        for(let i = 0; i < arr.length; i++) arr[i] = next();
+        return arr;
+    };
+    try { globalThis.crypto.getRandomValues = fill; }
+    catch(e) { Object.defineProperty(globalThis, "crypto", { value: { getRandomValues: fill } }); }
 }
 const SAMPLE_MS = +process.env.SAMPLE_MS || 250;
 const SHOT_MS = +process.env.SHOT_MS || 5000;
