@@ -29,6 +29,9 @@
 //                    same clock, so a busy host makes a run slower rather than meaningless.
 //   VIRTUAL_KIPS=n   instructions per virtual millisecond under DETERMINISTIC (default 30000),
 //                    which is what the emulated machine's speed amounts to
+//   SEED=n           the seed the deterministic run answers rdrand from. Varying this, or
+//                    VIRTUAL_KIPS, moves where each timer interrupt lands in the instruction
+//                    stream - which is how to hunt a race that a single fixed schedule steps over
 //   MIN_MIPS=n       give up if the emulator falls below this (default 8). A run on a host that is
 //                    swapping does not merely go slowly: node's timers fire minutes late, so the
 //                    keypresses land in the wrong phase and the whole run is noise that looks like
@@ -83,6 +86,10 @@ const MEMORY = (+process.env.MEMORY || 1024) * 1024 * 1024;
 // happens between timer ticks, so it is the emulated machine's speed.
 const DETERMINISTIC = +process.env.DETERMINISTIC || 0;
 const VIRTUAL_KIPS = +process.env.VIRTUAL_KIPS || 30000;
+// How far the clock's rate is allowed to wander, 0 for a perfectly regular one. 1 means the
+// interval between two timer interrupts varies by half either way, which is roughly what a loaded
+// host does to it.
+const JITTER = +process.env.JITTER || 0;
 
 // A clock the guest cannot tell from a real one, that depends on nothing outside the emulator.
 //
@@ -103,6 +110,24 @@ function stamp()
     return ((DETERMINISTIC ? virtual_ms() : real_now() - start) / 1000).toFixed(1);
 }
 
+// The clock's rate over one bucket of instructions. A pure function of which bucket, so that it
+// does not matter how often the clock is read - which is the whole difficulty: the harness samples
+// on the host's clock, so anything that advances per call to this function makes the guest depend
+// on the host again, by the back door.
+const JITTER_BUCKET = 65536;
+
+function jitter_factor(bucket)
+{
+    let h = Math.imul(bucket ^ 0x9e3779b9, 2654435761) >>> 0;
+    h ^= h >>> 15;
+    h = Math.imul(h, 2246822519) >>> 0;
+    h ^= h >>> 13;
+    return 1 + JITTER * ((h >>> 24) / 255 - 0.5);
+}
+
+let jitter_bucket = 0;      // buckets whose time is already accounted for
+let jitter_base_ms = 0;     // the clock at the start of that bucket
+
 function virtual_ms()
 {
     if(!clock_cpu) return 0;
@@ -110,7 +135,21 @@ function virtual_ms()
     const now = clock_cpu.instruction_counter[0] >>> 0;
     instructions_total += (now - instructions_last) >>> 0;
     instructions_last = now;
-    return instructions_total / VIRTUAL_KIPS;
+
+    if(!JITTER) return instructions_total / VIRTUAL_KIPS;
+
+    // A rate that wanders instead of a fixed one. On a real host the interval between two timer
+    // interrupts, counted in guest instructions, is never the same twice - the host's own load
+    // decides it. A perfectly regular clock lands every interrupt on a grid, and a race that needs
+    // one to arrive at an awkward instruction never gets tried. Wandering the rate deterministically
+    // puts the irregularity back without putting the host back with it.
+    while(instructions_total >= (jitter_bucket + 1) * JITTER_BUCKET)
+    {
+        jitter_base_ms += JITTER_BUCKET / (VIRTUAL_KIPS * jitter_factor(jitter_bucket));
+        jitter_bucket++;
+    }
+    const within = instructions_total - jitter_bucket * JITTER_BUCKET;
+    return jitter_base_ms + within / (VIRTUAL_KIPS * jitter_factor(jitter_bucket));
 }
 
 if(DETERMINISTIC)
@@ -124,7 +163,7 @@ if(DETERMINISTIC)
     // and v86 answers out of crypto.getRandomValues - which is real randomness and so is the one
     // thing left that differs between two runs of the same image. A seeded generator answers the
     // same sequence every time, which is what makes the boot repeatable rather than merely similar.
-    let seed = 0x2545f491;
+    let seed = (+process.env.SEED || 0x2545f491) >>> 0;
     const next = () => {
         seed ^= seed << 13; seed >>>= 0;
         seed ^= seed >>> 17;
