@@ -1,0 +1,6 @@
+; What long-mode-int-regs.asm leaves behind. Derived from the architecture: neither an interrupt nor
+; a fault that carries an error code changes any general register, and iretq puts back what it took.
+r8  = 0x0                  ; nothing came back wrong, across both frames, rsp included
+r9  = 0x1                  ; the software interrupt handler ran
+r10 = 0x1                  ; and iretq restored the flags, carry with them
+r11 = 0x1                  ; the #gp handler ran, so the zero above means something there too
