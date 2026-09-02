@@ -19,6 +19,16 @@
 //   SAMPLE_MS=n      how often to sample cpu state (default 250)
 //   SHOT_MS=n        how often to write a screenshot (default 5000)
 //   DISABLE_JIT=1    interpret everything, for telling a codegen bug from an interpreter one
+//   DETERMINISTIC=1  drive the guest's clock from its own instruction counter rather than the
+//                    host's, which makes a boot a function of the image alone. Two things vary
+//                    between runs otherwise: the wall clock, which windows folds into the seed it
+//                    lays the kernel out with, so the base moves every boot; and the rate the host
+//                    happens to run at, which decides where in the instruction stream each timer
+//                    interrupt lands. An intermittent failure is much cheaper to study when it
+//                    either happens every run or none. Keypresses and the run's length move to the
+//                    same clock, so a busy host makes a run slower rather than meaningless.
+//   VIRTUAL_KIPS=n   instructions per virtual millisecond under DETERMINISTIC (default 30000),
+//                    which is what the emulated machine's speed amounts to
 //   MIN_MIPS=n       give up if the emulator falls below this (default 8). A run on a host that is
 //                    swapping does not merely go slowly: node's timers fire minutes late, so the
 //                    keypresses land in the wrong phase and the whole run is noise that looks like
@@ -39,6 +49,10 @@ import fs from "node:fs";
 import zlib from "node:zlib";
 import url from "node:url";
 
+// Held before anything can replace it: a deterministic run redefines Date.now for the guest, and
+// the harness still has to know how much real time has passed.
+const real_now = Date.now.bind(Date);
+
 // v86 builds its framebuffer through ImageData, which browsers provide and node does not; without
 // it vga.js takes its "TODO: nodejs" branch and leaves image_data null, so there is nothing to
 // screenshot however graphical the guest gets. Everything downstream only reads .data, .width and
@@ -53,7 +67,7 @@ globalThis.ImageData ??= class ImageData {
 };
 
 const __dirname = url.fileURLToPath(new URL(".", import.meta.url));
-const { V86 } = await import(__dirname + "../../src/main.js");
+const { V86, v86 } = await import(__dirname + "../../src/main.js");
 
 const iso = process.argv[2];
 const run_seconds = +process.argv[3] || 120;
@@ -65,10 +79,54 @@ if(!iso || !fs.existsSync(iso))
 
 const OUT = process.env.OUT || __dirname + "../../build/boot-windows";
 const MEMORY = (+process.env.MEMORY || 1024) * 1024 * 1024;
+// Instructions per virtual millisecond. Only the ratio matters: it decides how much guest work
+// happens between timer ticks, so it is the emulated machine's speed.
+const DETERMINISTIC = +process.env.DETERMINISTIC || 0;
+const VIRTUAL_KIPS = +process.env.VIRTUAL_KIPS || 30000;
+
+// A clock the guest cannot tell from a real one, that depends on nothing outside the emulator.
+//
+// Two things vary between runs of the same boot and make an intermittent failure expensive to
+// study: the wall clock, which windows folds into the seed it lays the kernel out with - the base
+// moves every boot - and the rate the host happens to run at, which decides where in the guest's
+// instruction stream each timer interrupt lands. Both come from here. Driving them off the
+// instruction counter instead makes the whole boot a function of the image alone, so a failure
+// either happens every time or never, and the run that reproduces it can be repeated.
+let instructions_total = 0;
+let instructions_last = 0;
+let clock_cpu = null;
+
+// What a line in the log is timed against: the guest's clock when there is one, so that two runs
+// of the same image produce the same timestamps and can be diffed against each other.
+function stamp()
+{
+    return ((DETERMINISTIC ? virtual_ms() : real_now() - start) / 1000).toFixed(1);
+}
+
+function virtual_ms()
+{
+    if(!clock_cpu) return 0;
+    // the counter is a u32 that wraps, so take the delta rather than the value
+    const now = clock_cpu.instruction_counter[0] >>> 0;
+    instructions_total += (now - instructions_last) >>> 0;
+    instructions_last = now;
+    return instructions_total / VIRTUAL_KIPS;
+}
+
+if(DETERMINISTIC)
+{
+    // A fixed wall clock. The date itself is arbitrary; that it is the same every run is the point.
+    const epoch = Date.UTC(2026, 0, 1, 12, 0, 0);
+    v86.microtick = virtual_ms;
+    Date.now = () => epoch + virtual_ms();
+}
 const SAMPLE_MS = +process.env.SAMPLE_MS || 250;
 const SHOT_MS = +process.env.SHOT_MS || 5000;
 const HOT_FROM = +process.env.HOT_FROM || 0;
-const MIN_MIPS = process.env.MIN_MIPS === undefined ? 8 : +process.env.MIN_MIPS;
+// Under a virtual clock a starved host makes a run slower, not wrong: the guest sees the same
+// instruction stream either way, so there is nothing to give up on.
+const MIN_MIPS = process.env.MIN_MIPS !== undefined ? +process.env.MIN_MIPS
+    : DETERMINISTIC ? 0 : 8;
 const SAVE_AT = +process.env.SAVE_AT || 0;
 const RESTORE = process.env.RESTORE || "";
 const KEYS_AT = (process.env.KEYS_AT || "").split(",").filter(Boolean).map(Number);
@@ -190,10 +248,11 @@ emulator.add_listener("emulator-loaded", async () => {
     // the two want completely different investigations. Windows resets rather than reporting when
     // its early boot fails, so this is the signal that something went wrong, and when.
     const cpu = emulator.v86.cpu;
+    clock_cpu = cpu;
     const reboot = cpu.reboot_internal.bind(cpu);
     cpu.reboot_internal = function() {
         reboots++;
-        note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** RESET #${reboots} ` +
+        note(`[${stamp()}s] ** RESET #${reboots} ` +
              `(from eip=${state().eip}, 64=${state().is_64})`);
         // Whatever is on screen now is the reason: windows draws its bugcheck screen, which names
         // the stop code, and then restarts itself. One instruction later the framebuffer is gone,
@@ -204,7 +263,7 @@ emulator.add_listener("emulator-loaded", async () => {
     };
 });
 
-const start = Date.now();
+const start = real_now();
 // eip counted per address, so that a wedged run says which address it is wedged on.
 const hot = new Map();
 let last_line = "";
@@ -291,7 +350,7 @@ let instructions = 0;
 
 const spaces = new Set();
 const modes = new Map();
-let last_sample_at = Date.now();
+let last_sample_at = real_now();
 let starved = 0;
 let last_tick = -1;
 let ticks_seen = 0;
@@ -301,14 +360,15 @@ function milestone(name)
 {
     if(seen.has(name)) return;
     seen.add(name);
-    note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** ${name}`);
+    note(`[${stamp()}s] ** ${name}`);
 }
 
 const sampler = setInterval(() => {
     // At a short sample interval the first tick can beat the emulator into existence.
     if(!emulator.v86 || !emulator.v86.cpu) return;
+    if(DETERMINISTIC) virtual_schedule();
     const s = state();
-    const elapsed = (Date.now() - start) / 1000;
+    const elapsed = (real_now() - start) / 1000;
     if(elapsed >= HOT_FROM) hot.set(s.eip, (hot.get(s.eip) || 0) + 1);
 
     // How often the guest is in each mode with interrupts open. A guest that never runs long mode
@@ -325,8 +385,8 @@ const sampler = setInterval(() => {
     // Two symptoms of a host that is swapping, either of which invalidates the run: the emulator
     // crawling, and this very interval firing late - which is what moves the keypresses out of the
     // phase they were aimed at.
-    const gap = Date.now() - last_sample_at;
-    last_sample_at = Date.now();
+    const gap = real_now() - last_sample_at;
+    last_sample_at = real_now();
     if(elapsed > 20 && MIN_MIPS)
     {
         const mips = delta / gap / 1000;
@@ -380,7 +440,7 @@ const sampler = setInterval(() => {
         `efer=${s.efer.toString(16)} hlt=${s.in_hlt}`;
     if(line !== last_line)
     {
-        note(`[${((Date.now() - start) / 1000).toFixed(1)}s] eip=${s.eip} ${line}`);
+        note(`[${stamp()}s] eip=${s.eip} ${line}`);
         last_line = line;
     }
 }, SAMPLE_MS);
@@ -398,7 +458,7 @@ const shooter = setInterval(() => {
     };
     note(`  ivt: int 1a -> ${vector(0x1a)}   int 16 -> ${vector(0x16)}   int 8 -> ${vector(8)}`);
 
-    const seconds = (Date.now() - start) / 1000;
+    const seconds = (real_now() - start) / 1000;
     note(`[${seconds.toFixed(1)}s] eip=${state().eip} ` +
          `(${(instructions / seconds / 1e6).toFixed(1)} million instructions/s)`);
     screenshot(tag);
@@ -408,7 +468,7 @@ if(SAVE_AT)
 {
     setTimeout(async () => {
         const path = OUT + "/state.bin";
-        note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** saving the machine to ${path}`);
+        note(`[${stamp()}s] ** saving the machine to ${path}`);
         await emulator.stop();
         const state = await emulator.save_state();
         fs.writeFileSync(path, Buffer.from(state));
@@ -419,14 +479,32 @@ if(SAVE_AT)
 
 function press_enter()
 {
-    note(`[${((Date.now() - start) / 1000).toFixed(1)}s] ** pressing enter`);
+    note(`[${stamp()}s] ** pressing enter`);
     emulator.keyboard_send_scancodes([0x1c, 0x9c]);
 }
 
-for(const at of KEYS_AT) setTimeout(press_enter, at * 1000);
-if(KEYS_EVERY) setInterval(press_enter, KEYS_EVERY * 1000);
+// A deterministic run schedules everything on the guest's clock. That is the point of the exercise:
+// on a busy host a real-time timer fires minutes late in guest terms, so a keypress meant for the
+// boot menu arrives somewhere else entirely and the run says nothing. On the virtual clock it
+// arrives at the same instruction every time.
+const virtual_pending = KEYS_AT.slice().sort((a, b) => a - b);
+let virtual_every_next = KEYS_EVERY;
 
-setTimeout(() => {
+function virtual_schedule()
+{
+    const now = virtual_ms() / 1000;
+    while(virtual_pending.length && virtual_pending[0] <= now) { virtual_pending.shift(); press_enter(); }
+    if(KEYS_EVERY && now >= virtual_every_next) { virtual_every_next += KEYS_EVERY; press_enter(); }
+    if(now >= run_seconds) finish();
+}
+
+if(!DETERMINISTIC)
+{
+    for(const at of KEYS_AT) setTimeout(press_enter, at * 1000);
+    if(KEYS_EVERY) setInterval(press_enter, KEYS_EVERY * 1000);
+}
+
+function finish() {
     clearInterval(sampler);
     clearInterval(shooter);
     screenshot("final");
@@ -453,4 +531,8 @@ setTimeout(() => {
     log_file.end();
     emulator.destroy();
     process.exit(0);
-}, run_seconds * 1000);
+}
+
+// The wall clock still ends a run that is not deterministic, and backstops one that is: if the
+// guest wedges and stops retiring instructions, its clock stops with it and would never get here.
+setTimeout(finish, run_seconds * 1000 * (DETERMINISTIC ? 8 : 1));
