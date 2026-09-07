@@ -4,3 +4,4 @@ r8  = 0x0                  ; nothing came back wrong, across both frames, rsp in
 r9  = 0x1                  ; the software interrupt handler ran
 r10 = 0x1                  ; and iretq restored the flags, carry with them
 r11 = 0x1                  ; the #gp handler ran, so the zero above means something there too
+r13 = 0x0                  ; every arithmetic flag came back, not only carry

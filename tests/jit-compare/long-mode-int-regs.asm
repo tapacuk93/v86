@@ -182,6 +182,51 @@ after_gp:
 .gp_rsp_ok:
     movzx r11, byte [BUF + 0x8a]            ; -> 1, the fault handler ran
 
+    ; The arithmetic flags, all of them rather than just carry. This emulator works them out lazily
+    ; from the last operation rather than storing them, so what an interrupt has to preserve is not
+    ; a register but a promise to recompute the same answer afterwards - and the frame carries the
+    ; materialised flags while the promise stays behind in the interrupted code.
+    mov rax, 0x7fffffffffffffff
+    add rax, 1                              ; of and sf set, zf clear, cf clear, af set
+    pushfq
+    pop r12
+    int 0x40
+    pushfq
+    pop rax
+    xor rax, r12
+    and rax, 0x8d5                          ; cf, pf, af, zf, sf, of
+    mov r13, rax                            ; -> 0, every arithmetic flag came back
+
+    ; And the vector registers, which windows uses for almost every copy and compare, so a thread
+    ; switch that lost one would show up as arithmetic quietly going wrong rather than as a fault.
+    mov rax, 0x0f1e2d3c4b5a6978
+    movq xmm0, rax
+    mov rax, 0x1122334455667788
+    movq xmm8, rax
+    mov rax, 0x99aabbccddeeff00
+    movq xmm15, rax
+
+    int 0x40
+
+    movq rax, xmm0
+    mov rcx, 0x0f1e2d3c4b5a6978
+    cmp rax, rcx
+    je .x0
+    inc r8
+.x0:
+    movq rax, xmm8
+    mov rcx, 0x1122334455667788
+    cmp rax, rcx
+    je .x8
+    inc r8
+.x8:
+    movq rax, xmm15
+    mov rcx, 0x99aabbccddeeff00
+    cmp rax, rcx
+    je .x15
+    inc r8
+.x15:
+
     hlt
 
 handler:
