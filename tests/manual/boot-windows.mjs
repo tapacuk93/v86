@@ -314,6 +314,8 @@ emulator.add_listener("emulator-loaded", async () => {
         // Whatever is on screen now is the reason: windows draws its bugcheck screen, which names
         // the stop code, and then restarts itself. One instruction later the framebuffer is gone,
         // so this is the only moment the screen can be read.
+        try { cpu.wm.exports["xdump_trace"] && cpu.wm.exports["xdump_trace"](); }
+        catch(e) { note("  could not dump the trace: " + e); }
         try { screenshot(`reset-${reboots}`); }
         catch(e) { note("  could not capture the screen at reset: " + e); }
         return reboot();
@@ -420,10 +422,35 @@ function milestone(name)
     note(`[${stamp()}s] ** ${name}`);
 }
 
+let wedged_at = null;
+let wedged_for = 0;
+
 const sampler = setInterval(() => {
+    // Before the guard below, and before anything that could throw: a run that will not stop is
+    // worse than one that stops early, and an hour was spent on one that outlived its own clock.
+    if(DETERMINISTIC) virtual_schedule();
     // At a short sample interval the first tick can beat the emulator into existence.
     if(!emulator.v86 || !emulator.v86.cpu) return;
-    if(DETERMINISTIC) virtual_schedule();
+
+    // A machine halted with interrupts closed is not going to do anything else. Windows gets here
+    // by bugchecking without being able to restart, and nothing after it is worth waiting for.
+    {
+        const st = state();
+        if(st.in_hlt && !st.interrupts_enabled && st.eip === wedged_at)
+        {
+            if(++wedged_for * SAMPLE_MS >= 20000)
+            {
+                note(`[${stamp()}s] ** the guest is wedged: halted at ${st.eip} with interrupts closed`);
+                finish();
+                return;
+            }
+        }
+        else
+        {
+            wedged_at = st.in_hlt && !st.interrupts_enabled ? st.eip : null;
+            wedged_for = 0;
+        }
+    }
     const s = state();
     const elapsed = (real_now() - start) / 1000;
     if(elapsed >= HOT_FROM) hot.set(s.eip, (hot.get(s.eip) || 0) + 1);
