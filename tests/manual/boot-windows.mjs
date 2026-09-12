@@ -128,6 +128,9 @@ function jitter_factor(bucket)
 let jitter_bucket = 0;      // buckets whose time is already accounted for
 let jitter_base_ms = 0;     // the clock at the start of that bucket
 
+let halted_ms = 0;
+let halted_since = 0;
+
 function virtual_ms()
 {
     if(!clock_cpu) return 0;
@@ -136,7 +139,23 @@ function virtual_ms()
     instructions_total += (now - instructions_last) >>> 0;
     instructions_last = now;
 
-    if(!JITTER) return instructions_total / VIRTUAL_KIPS;
+    // A halted guest retires no instructions, so a clock made only of instructions stops with it -
+    // and then no timer can come due, and nothing ever wakes it. The machine deadlocks against its
+    // own clock, which looks exactly like the guest hanging and is not the guest's doing at all.
+    // Time has to keep moving across a halt; real time is what it moves by, since there is nothing
+    // else running to measure. Only the idle stretches depend on the host, not the execution.
+    if(clock_cpu.in_hlt && clock_cpu.in_hlt[0])
+    {
+        const t = real_now();
+        if(halted_since) halted_ms += t - halted_since;
+        halted_since = t;
+    }
+    else
+    {
+        halted_since = 0;
+    }
+
+    if(!JITTER) return instructions_total / VIRTUAL_KIPS + halted_ms;
 
     // A rate that wanders instead of a fixed one. On a real host the interval between two timer
     // interrupts, counted in guest instructions, is never the same twice - the host's own load
@@ -149,7 +168,7 @@ function virtual_ms()
         jitter_bucket++;
     }
     const within = instructions_total - jitter_bucket * JITTER_BUCKET;
-    return jitter_base_ms + within / (VIRTUAL_KIPS * jitter_factor(jitter_bucket));
+    return jitter_base_ms + within / (VIRTUAL_KIPS * jitter_factor(jitter_bucket)) + halted_ms;
 }
 
 if(DETERMINISTIC)
@@ -424,6 +443,8 @@ function milestone(name)
 
 let wedged_at = null;
 let wedged_for = 0;
+let idle_at = null;
+let idle_for = 0;
 
 const sampler = setInterval(() => {
     // Before the guard below, and before anything that could throw: a run that will not stop is
@@ -445,10 +466,24 @@ const sampler = setInterval(() => {
                 return;
             }
         }
+        // Halted with interrupts *open* is a different thing: the machine is idle, waiting for an
+        // interrupt that is not coming. Say so, and ask the apic why, rather than letting the run
+        // look like slow progress.
+        else if(st.in_hlt && st.interrupts_enabled && st.eip === idle_at)
+        {
+            if(++idle_for * SAMPLE_MS === 30000)
+            {
+                note(`[${stamp()}s] ** idle: halted at ${st.eip} with interrupts open, nothing waking it`);
+                try { emulator.v86.cpu.wm.exports["xdump_apic"] && emulator.v86.cpu.wm.exports["xdump_apic"](); }
+                catch(e) { note("  could not read the apic: " + e); }
+            }
+        }
         else
         {
             wedged_at = st.in_hlt && !st.interrupts_enabled ? st.eip : null;
             wedged_for = 0;
+            idle_at = st.in_hlt && st.interrupts_enabled ? st.eip : null;
+            idle_for = 0;
         }
     }
     const s = state();
