@@ -3499,7 +3499,11 @@ pub unsafe fn instr_0FA2() {
         },
 
         0x80000008 => {
-            eax = 32 | 32 << 8; // physical and linear address widths
+            // Physical and linear address widths. Four-level paging makes a linear address 48 bits
+            // wide and the guest is entitled to use all of them - windows lays its kernel out in
+            // the top of that range and reads this leaf to know where the range ends. The physical
+            // width stays 32: there is no more memory here than that addresses.
+            eax = if config::ENABLE_LONG_MODE { 32 | 48 << 8 } else { 32 | 32 << 8 };
             ebx = 0;
             ecx = 0;
             edx = 0;
