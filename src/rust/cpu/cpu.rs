@@ -726,6 +726,25 @@ pub unsafe fn call_interrupt_vector_64(
     };
 
     let eflags = get_eflags();
+
+    // The cpu is already in the kernel by the time the frame is written. It has loaded cs - which
+    // is what sets cpl - and switched to the stack the tss named, and only then does it push. That
+    // ordering is not a detail: the stack a kernel gives itself is mapped supervisor-only, so a
+    // frame pushed while cpl is still 3 is refused by the page tables, faults, and - since the
+    // fault's own frame goes to the same place - double faults and then triples. Which is exactly
+    // what windows did here, the moment it ran its first user mode process.
+    if new_cpl < *cpl {
+        // Long mode loads ss with a null selector on a privilege change: there is no stack
+        // descriptor to read, only the pointer that came out of the tss. The rpl still has to say
+        // which ring the frame belongs to, so that iret can put it back.
+        *segment_is_null.offset(SS as isize) = false;
+        *segment_limits.offset(SS as isize) = 0xFFFFFFFF;
+        *segment_offsets.offset(SS as isize) = 0;
+        *segment_access_bytes.offset(SS as isize) = 0x80 | (new_cpl << 5) | 0x10 | 0x02 | 0x01;
+        *sreg.offset(SS as isize) = new_cpl as u16;
+        *cpl = new_cpl;
+    }
+
     let result = (|| -> OrPageFault<()> {
         push(&mut rsp, old_ss)?;
         push(&mut rsp, old_rsp)?;
@@ -742,18 +761,6 @@ pub unsafe fn call_interrupt_vector_64(
     }
 
     write_reg64(ESP, rsp);
-
-    if new_cpl < *cpl {
-        // Long mode loads ss with a null selector on a privilege change: there is no stack
-        // descriptor to read, only the pointer that came out of the tss. The rpl still has to say
-        // which ring the frame belongs to, so that iret can put it back.
-        *segment_is_null.offset(SS as isize) = false;
-        *segment_limits.offset(SS as isize) = 0xFFFFFFFF;
-        *segment_offsets.offset(SS as isize) = 0;
-        *segment_access_bytes.offset(SS as isize) = 0x80 | (new_cpl << 5) | 0x10 | 0x02 | 0x01;
-        *sreg.offset(SS as isize) = new_cpl as u16;
-        *cpl = new_cpl;
-    }
 
     if !switch_seg_64_interrupt(selector) {
         return;
@@ -1209,6 +1216,35 @@ unsafe fn escalate(interrupt_nr: i32, error_code: Option<i32>) -> Option<(i32, O
             match read_tss_stack64(TSS_RSP_BASE) {
                 Ok(v) => dbg_log!("#df: rsp0 from the tss = {:x}", v),
                 Err(()) => dbg_log!("#df: rsp0 could not be read from the tss at all"),
+            }
+            // Which level of the walk refuses the stack the tss named, and whether it is absent or
+            // merely not writable - those are different bugs.
+            {
+                let addr = *cr2;
+                let mut table = (*cr.offset(3) as u32) & 0xFFFF_F000;
+                let mut chain = String::new();
+                for level in 0..4 {
+                    let index = ((addr as u64) >> (39 - 9 * level)) & 0x1FF;
+                    let at = table + (index as u32) * 8;
+                    let entry = memory::read64s(at);
+                    chain.push_str(&format!(
+                        "[{}] idx={:x} entry={:x}{}{} ",
+                        level,
+                        index,
+                        entry,
+                        if entry & 1 == 0 { " NOT-PRESENT" } else { "" },
+                        if entry & 2 == 0 { " READ-ONLY" } else { "" }
+                    ));
+                    if entry & 1 == 0 {
+                        break;
+                    }
+                    if level < 3 && entry & 0x80 != 0 {
+                        chain.push_str("<- large ");
+                        break;
+                    }
+                    table = (entry as u32) & 0xFFFF_F000;
+                }
+                dbg_log!("#df: walk of {:x} under cr3={:x}: {}", addr, *cr.offset(3), chain);
             }
             Some((CPU_EXCEPTION_DF, Some(0)))
         },
