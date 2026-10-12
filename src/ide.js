@@ -38,6 +38,9 @@ import { BusConnector } from "./bus.js";
 // - [SFF-8020]
 //   ATA Packet Interface for CD-ROMs (Rev. 1.2, Feb. 12, 1994)
 //   https://dn790009.ca.archive.org/0/items/SCSISpecificationDocumentsATAATAPI/SFF-8020_%20ATA%20Packet%20Interface%20for%20CD-ROMs%20-%20SFF.pdf
+// - [AACS]
+//   Advanced Access Control System (AACS) (Rev. 0.953, Oct. 26, 2012)
+//   https://aacsla.com/wp-content/uploads/2019/02/AACS_Spec_Common_Final_0953.pdf
 
 const CDROM_SECTOR_SIZE = 2048;
 const HD_SECTOR_SIZE = 512;
@@ -126,6 +129,7 @@ const ATA_CMD_WRITE_MULTIPLE = 0x39;                  // see [ATA8-ACS] 7.64
 const ATA_CMD_WRITE_MULTIPLE_EXT = 0xC5;              // see [ATA8-ACS] 7.65
 const ATA_CMD_WRITE_SECTORS = 0x30;                   // see [ATA8-ACS] 7.67
 const ATA_CMD_WRITE_SECTORS_EXT = 0x34;               // see [ATA8-ACS] 7.68
+const ATA_CMD_READ_LOG_EXT = 0x2F;                    // see [ACS-3] 7.42
 const ATA_CMD_10h = 0x10;                             // command obsolete/unknown, see [ATA-6] Table E.2
 const ATA_CMD_F0h = 0xF0;                             // vendor-specific
 
@@ -163,6 +167,7 @@ const ATA_CMD_NAME =
     [ATA_CMD_WRITE_MULTIPLE_EXT]:           "WRITE MULTIPLE EXT",
     [ATA_CMD_WRITE_SECTORS]:                "WRITE SECTORS",
     [ATA_CMD_WRITE_SECTORS_EXT]:            "WRITE SECTORS EXT",
+    [ATA_CMD_READ_LOG_EXT]:                 "READ LOG EXT",
     [ATA_CMD_10h]:                          "<UNKNOWN 10h>",
     [ATA_CMD_F0h]:                          "<VENDOR-SPECIFIC F0h>",
 };
@@ -179,6 +184,7 @@ const ATAPI_CMD_PREVENT_ALLOW_MEDIUM_REMOVAL = 0x1E;  // see [MMC-2] 9.1.9
 const ATAPI_CMD_READ_10 = 0x28;                       // see [CD-SCSI-2]
 const ATAPI_CMD_READ_12 = 0xA8;                       // see [SFF-8020] 9.8.14
 const ATAPI_CMD_READ_CAPACITY = 0x25;                 // see [MMC-2] 9.1.12
+const ATAPI_CMD_READ_FORMAT_CAPACITIES = 0x23;        // see [MMC-3] 5.21
 const ATAPI_CMD_READ_CD = 0xBE;                       // see [CD-SCSI-2]
 const ATAPI_CMD_READ_DISK_INFORMATION = 0x51;         // see [CD-SCSI-2]
 const ATAPI_CMD_READ_SUBCHANNEL = 0x42;               // see [CD-SCSI-2]
@@ -187,6 +193,8 @@ const ATAPI_CMD_READ_TRACK_INFORMATION = 0x52;        // see [CD-SCSI-2]
 const ATAPI_CMD_REQUEST_SENSE = 0x03;                 // see [MMC-2] 9.1.18
 const ATAPI_CMD_START_STOP_UNIT = 0x1B;               // see [CD-SCSI-2]
 const ATAPI_CMD_TEST_UNIT_READY = 0x00;               // see [MMC-2] 9.1.20
+const ATAPI_CMD_REPORT_KEY = 0xA4;                    // see [MMC-3] 5.26
+const ATAPI_CMD_READ_DISC_STRUCTURE = 0xAD;           // see [AASC] 4.14.3
 
 // ATAPI command flags
 const ATAPI_CF_NONE = 0x00;         // no flags
@@ -207,6 +215,7 @@ const ATAPI_CMD =
     [ATAPI_CMD_READ_10]:                       {name: "READ (10)",                     flags: ATAPI_CF_NEEDS_DISK},
     [ATAPI_CMD_READ_12]:                       {name: "READ (12)",                     flags: ATAPI_CF_NEEDS_DISK},
     [ATAPI_CMD_READ_CAPACITY]:                 {name: "READ CAPACITY",                 flags: ATAPI_CF_NEEDS_DISK},
+    [ATAPI_CMD_READ_FORMAT_CAPACITIES]:        {name: "READ FORMAT CAPACITIES",        flags: ATAPI_CF_NEEDS_DISK},
     [ATAPI_CMD_READ_CD]:                       {name: "READ CD",                       flags: ATAPI_CF_NEEDS_DISK},
     [ATAPI_CMD_READ_DISK_INFORMATION]:         {name: "READ DISK INFORMATION",         flags: ATAPI_CF_NEEDS_DISK},
     [ATAPI_CMD_READ_SUBCHANNEL]:               {name: "READ SUBCHANNEL",               flags: ATAPI_CF_NEEDS_DISK},
@@ -215,6 +224,8 @@ const ATAPI_CMD =
     [ATAPI_CMD_REQUEST_SENSE]:                 {name: "REQUEST SENSE",                 flags: ATAPI_CF_NONE},
     [ATAPI_CMD_START_STOP_UNIT]:               {name: "START STOP UNIT",               flags: ATAPI_CF_NONE},
     [ATAPI_CMD_TEST_UNIT_READY]:               {name: "TEST UNIT READY",               flags: ATAPI_CF_NEEDS_DISK},
+    [ATAPI_CMD_REPORT_KEY]:                    {name: "REPORT KEY",                    flags: ATAPI_CF_NONE},
+    [ATAPI_CMD_READ_DISC_STRUCTURE]:           {name: "READ DISC STRUCTURE",           flags: ATAPI_CF_NEEDS_DISK},
 };
 
 // ATAPI device signature
@@ -1290,7 +1301,6 @@ IDEInterface.prototype.ata_command = function(cmd)
                 this.data_end = 12;
                 this.sector_count_reg = 0x01;   // 0x01: indicates transfer of a command packet (C/D)
                 this.status_reg = ATA_SR_DRDY|ATA_SR_DSC|ATA_SR_DRQ;
-                this.push_irq();
             }
             else
             {
@@ -1317,6 +1327,10 @@ IDEInterface.prototype.ata_command = function(cmd)
             this.sectors_per_drq = this.sector_count_reg & 0xFF;
             this.status_reg = ATA_SR_DRDY|ATA_SR_DSC;
             this.push_irq();
+            break;
+
+        case ATA_CMD_READ_LOG_EXT:
+            this.ata_abort_command();
             break;
 
         case ATA_CMD_READ_DMA:
@@ -1561,6 +1575,26 @@ IDEInterface.prototype.atapi_handle = function()
             this.status_reg = ATA_SR_DRDY|ATA_SR_DSC|ATA_SR_DRQ;
             break;
 
+        case ATAPI_CMD_READ_FORMAT_CAPACITIES:
+            var count = this.sector_count - 1;
+            this.data_set(new Uint8Array([
+                0,
+                0,
+                0,
+                8, // capacity list length
+                count >> 24 & 0xFF,
+                count >> 16 & 0xFF,
+                count >> 8 & 0xFF,
+                count & 0xFF,
+                2, // formatted
+                this.sector_size >> 16 & 0xFF,
+                this.sector_size >> 8 & 0xFF,
+                this.sector_size & 0xFF,
+            ]));
+            this.data_end = this.data_length;
+            this.status_reg = ATA_SR_DRDY|ATA_SR_DSC|ATA_SR_DRQ;
+            break;
+
         case ATAPI_CMD_READ_10:
         case ATAPI_CMD_READ_12:
             do_dbg_log = false;
@@ -1696,6 +1730,8 @@ IDEInterface.prototype.atapi_handle = function()
 
         case ATAPI_CMD_PAUSE:
         case ATAPI_CMD_GET_EVENT_STATUS_NOTIFICATION:
+        case ATAPI_CMD_REPORT_KEY:
+        case ATAPI_CMD_READ_DISC_STRUCTURE:
             dbg_log_extra = "unimplemented";
             this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
             break;

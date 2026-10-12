@@ -211,6 +211,7 @@ export function CPU(bus, wm, stop_idling)
     this.dreg = view(Int32Array, memory, 684, 8);
 
     this.reg_pdpte = view(Int32Array, memory, 968, 8);
+    this.pat = view(Uint32Array, memory, 1288, 2);
 
     this.svga_dirty_bitmap_min_offset = view(Uint32Array, memory, 716, 1);
     this.svga_dirty_bitmap_max_offset = view(Uint32Array, memory, 720, 1);
@@ -576,6 +577,8 @@ CPU.prototype.get_state = function()
     state[91] = this.devices.parallel1;
     state[92] = this.efer[0];
     state[93] = this.is_64[0];
+    // Upstream put the page attribute table at 93, which this branch already uses
+    state[94] = this.pat;
 
     return state;
 };
@@ -693,6 +696,8 @@ CPU.prototype.set_state = function(state)
     this.sreg.set(state[40]);
     this.dreg.set(state[41]);
     state[42] && this.reg_pdpte.set(state[42]);
+    this.pat.set(state[94] || [0x00070406, 0x00070406]);
+    this.efer.fill(0);
 
     this.set_tsc(state[43][0], state[43][1]);
 

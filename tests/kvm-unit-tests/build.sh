@@ -29,4 +29,4 @@ fi
 
 ./configure --arch=i386
 make CC="$CC -std=gnu11 -mno-sse -mno-sse2 -mno-mmx$EXTRA_CFLAGS" "${EXTRA_MAKE_ARGS[@]}" \
-    x86/realmode.flat x86/taskswitch.flat x86/taskswitch2.flat
+    x86/realmode.flat x86/taskswitch.flat x86/taskswitch2.flat x86/nx.flat x86/pat.flat
