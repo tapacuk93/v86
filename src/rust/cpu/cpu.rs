@@ -3000,6 +3000,12 @@ pub unsafe fn trigger_pagefault(
     *cr.offset(2) = addr as i32;
     // invalidate tlb entry
     clear_tlb_slot(tlb_slot(addr) as i32);
+    // The instruction fetch bit only appears in the error code when the processor has a reason to
+    // distinguish a fetch from a read - that is, when smep or nx is in effect. Upstream added this;
+    // reporting it unconditionally tells the guest about a distinction it never enabled.
+    let fetch = fetch
+        && (*cr.offset(4) & CR4_SMEP != 0
+            || *cr.offset(4) & CR4_PAE != 0 && *efer & EFER_NXE != 0);
     let error_code = (fetch as i32) << 4
         | (reserved as i32) << 3
         | (user as i32) << 2
@@ -5627,6 +5633,7 @@ pub unsafe fn reset_cpu() {
         *reg64.offset(i) = 0;
     }
 
+    *pat = 0x0007_0406_0007_0406;
     *efer = 0;
     *is_64 = false;
     *rex = 0;
