@@ -155,6 +155,11 @@ pub const fpu_st: *mut F80 = 1152 as *mut F80; // 8 80-bit entries, to 1280
 // cache and the fpu state.
 pub const reg_xmm: *mut reg128 = 1280 as *mut reg128; // 16 128-bit entries, to 1536
 
+// The page attribute table. Upstream put this at 1280, which is where the wider xmm block now
+// begins, so it goes above it instead. efer stays where this fork already had it, at 628, since
+// everything here reads it as an i32 and widening it buys nothing the long mode work needs.
+pub const pat: *mut u64 = 1536 as *mut u64;
+
 pub fn get_reg32_offset(r: u32) -> u32 {
     dbg_assert!(r < 8);
     // The low half of the 64-bit register, which is what the 32-bit jit loads and stores. Still
