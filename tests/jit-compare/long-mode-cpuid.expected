@@ -1,0 +1,9 @@
+; What long-mode-cpuid.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x0                  ; every required bit of leaf 1 edx is present, apic aside
+r9  = 0x1                  ; cmpxchg16b, which windows 8 and later will not boot without
+r10 = 0x1                  ; long mode
+r11 = 0x1                  ; syscall, which is how windows makes every system call
+r12 = 0x1                  ; nx
+r13 = 0x101                ; lahf/sahf and prefetchw
+r14 = 0x20                 ; 32 physical address bits, which is all the memory there is
+r15 = 0x30                 ; 48 linear address bits, because paging has four levels
