@@ -243,6 +243,18 @@ pub const IA32_SYSENTER_EIP: i32 = 0x176;
 /// pagefile offset, a pointer to a prototype pte - in entries whose present bit is clear, and
 /// none of that is an address.
 pub const PAGE_ENTRY_ADDRESS_ABOVE_32: u64 = 0x000F_FFFF_0000_0000;
+/// What the processor needs no mitigation for. An emulator executes nothing speculatively, so every
+/// "not susceptible" bit here is simply true, and saying so spares the guest a great deal of work it
+/// would otherwise do on this machine's behalf for no reason.
+pub const IA32_ARCH_CAPABILITIES: i32 = 0x10A;
+pub const ARCH_CAP_RDCL_NO: i32 = 1 << 0; // rogue data cache load, i.e. meltdown
+pub const ARCH_CAP_IBRS_ALL: i32 = 1 << 1;
+pub const ARCH_CAP_SKIP_L1DFL: i32 = 1 << 3;
+pub const ARCH_CAP_SSB_NO: i32 = 1 << 4; // speculative store bypass
+pub const ARCH_CAP_MDS_NO: i32 = 1 << 5; // microarchitectural data sampling
+pub const ARCH_CAP_PSCHANGE_MC_NO: i32 = 1 << 6;
+pub const ARCH_CAP_TAA_NO: i32 = 1 << 8; // tsx asynchronous abort
+
 pub const IA32_MCG_CAP: i32 = 0x179;
 pub const IA32_MCG_STATUS: i32 = 0x17A;
 pub const IA32_MCG_CTL: i32 = 0x17B;
@@ -1182,7 +1194,22 @@ unsafe fn escalate(interrupt_nr: i32, error_code: Option<i32>) -> Option<(i32, O
     match *(&raw const exception_depth) {
         0 => Some((interrupt_nr, error_code)),
         1 => {
-            dbg_log!("#df: {} while delivering an exception", interrupt_nr);
+            // XXX temporary: what the frame was being pushed to when it faulted. A fault delivered
+            // from cpl 3 takes its stack from the tss, so a wrong tr base or a wrong rsp0 shows up
+            // here as the first address that could not be written.
+            dbg_log!(
+                "#df: {} while delivering an exception. cr2={:x} cpl={} rsp={:x} tr_base={:x} ss={:x}",
+                interrupt_nr,
+                *cr2,
+                *cpl,
+                read_reg64(ESP),
+                *tr_base,
+                *sreg.offset(SS as isize)
+            );
+            match read_tss_stack64(TSS_RSP_BASE) {
+                Ok(v) => dbg_log!("#df: rsp0 from the tss = {:x}", v),
+                Err(()) => dbg_log!("#df: rsp0 could not be read from the tss at all"),
+            }
             Some((CPU_EXCEPTION_DF, Some(0)))
         },
         _ => {

@@ -1402,6 +1402,15 @@ pub unsafe fn instr_0F32() {
         },
         IA32_RTIT_CTL => {}, // linux4
         MSR_SMI_COUNT => {},
+        IA32_ARCH_CAPABILITIES => {
+            low = ARCH_CAP_RDCL_NO
+                | ARCH_CAP_IBRS_ALL
+                | ARCH_CAP_SKIP_L1DFL
+                | ARCH_CAP_SSB_NO
+                | ARCH_CAP_MDS_NO
+                | ARCH_CAP_PSCHANGE_MC_NO
+                | ARCH_CAP_TAA_NO;
+        },
         IA32_MCG_CAP => {},                        // netbsd
         IA32_MCG_STATUS | IA32_MCG_CTL => {},
         _ if (IA32_MC0_CTL..IA32_MC_END).contains(&index) => {},
@@ -3441,7 +3450,11 @@ pub unsafe fn instr_0FA2() {
                 eax = 0; // maximum supported sub-level
                 ebx = 1 << 9; // enhanced REP MOVSB/STOSB
                 ecx = 0;
-                edx = 0;
+                // ia32_arch_capabilities exists. What it says is that this processor needs none of
+                // the speculation mitigations, which is true of one that does not speculate - and
+                // which stops a 64-bit windows deciding to shadow its kernel page tables on the
+                // strength of the processor signature reported above.
+                edx = 1 << 29;
             }
         },
 
