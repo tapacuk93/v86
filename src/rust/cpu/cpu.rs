@@ -1157,11 +1157,66 @@ pub unsafe fn iret(is_16: bool) {
     handle_irqs();
 }
 
+/// How deep into delivering an exception the cpu is.
+///
+/// Delivering one is not free of faults: the frame is pushed onto a stack the guest chose, and that
+/// stack can be unmapped or read-only. A fault there is not another ordinary fault - the first one
+/// was never delivered - so the architecture escalates. A fault while delivering a fault is #df, and
+/// a fault while delivering #df is a triple fault, which resets the machine.
+///
+/// Without this the emulator simply recurses: push faults, deliver the page fault, push faults,
+/// until the host's stack gives out. Windows reaches it while starting its first processes, so a
+/// boot that is otherwise healthy ends in `Maximum call stack size exceeded` with nothing to say
+/// which guest instruction was responsible.
+pub static mut exception_depth: i32 = 0;
+
+struct ExceptionDepth;
+impl Drop for ExceptionDepth {
+    fn drop(&mut self) { unsafe { exception_depth -= 1 } }
+}
+
+/// What to deliver instead, given how deep we already are. None means the machine is gone.
+unsafe fn escalate(interrupt_nr: i32, error_code: Option<i32>) -> Option<(i32, Option<i32>)> {
+    // Only faults escalate. A software interrupt or an external irq taken while an exception is
+    // being delivered is not a double fault, and never reaches here anyway.
+    match *(&raw const exception_depth) {
+        0 => Some((interrupt_nr, error_code)),
+        1 => {
+            dbg_log!("#df: {} while delivering an exception", interrupt_nr);
+            Some((CPU_EXCEPTION_DF, Some(0)))
+        },
+        _ => {
+            dbg_log!("triple fault: {} while delivering #df", interrupt_nr);
+            None
+        },
+    }
+}
+
 pub unsafe fn call_interrupt_vector(
     interrupt_nr: i32,
     is_software_int: bool,
     error_code: Option<i32>,
 ) {
+    // Only a fault can double-fault. The rest are delivered as asked.
+    let is_fault = !is_software_int && interrupt_nr < 32;
+    let (interrupt_nr, error_code) = if is_fault {
+        match escalate(interrupt_nr, error_code) {
+            Some(x) => x,
+            None => {
+                // A triple fault resets the machine. The ps2 controller is what the guest itself
+                // would have used to do it.
+                js::io_port_write8(0x64, 0xFE);
+                return;
+            },
+        }
+    }
+    else {
+        (interrupt_nr, error_code)
+    };
+
+    *(&raw mut exception_depth) += 1;
+    let _depth = ExceptionDepth;
+
     if long_mode_active() {
         return call_interrupt_vector_64(interrupt_nr, is_software_int, error_code);
     }
