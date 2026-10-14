@@ -1,0 +1,7 @@
+; What long-mode-selfmap.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x30003              ; the page table entry, seen through the self-map
+r9  = 0xcafef00d           ; the mapping follows an entry written through the self-map
+r10 = 0x31023              ; the same write at the physical address, with the accessed bit
+                           ; the cpu set when the mapping below was used
+r11 = 0x30003              ; a write at the physical address is visible through the self-map
+r12 = 0xdeadbeef           ; and the mapping follows that one too
