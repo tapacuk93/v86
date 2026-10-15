@@ -1,0 +1,9 @@
+; What long-mode-pf-error.asm leaves behind. Values are hex, as in every one of these files.
+; Error code bits: 1 present, 2 write, 4 user, 8 reserved, 10 instruction fetch.
+r8  = 0x0                  ; read of an address with no mapping
+r9  = 0x2                  ; write of the same address
+r10 = 0x3                  ; write of a present read only page, cr0.wp set
+r11 = 0x11                 ; fetch from a present nx page, nxe on
+r12 = 0x9                  ; read of a present entry with bit 63 set while nxe is off
+r13 = 0x403000             ; cr2 of that last fault
+r14 = 0x5                  ; and all five faults were taken
