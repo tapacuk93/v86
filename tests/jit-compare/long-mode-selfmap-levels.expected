@@ -1,0 +1,8 @@
+; What long-mode-selfmap-levels.asm leaves behind. Values are hex, as in every one of these files.
+; 20 is the accessed bit, which the walk of virtual 0x400000 sets on all four levels.
+r8  = 0x30023              ; the page table entry, at pte_base
+r9  = 0x13023              ; the page directory entry, at pde_base
+r10 = 0x12023              ; the page directory pointer entry, at ppe_base
+r11 = 0x11023              ; the pml4 entry, at pxe_base
+r12 = 0xcafef00d           ; the mapping follows a page directory entry written through the self-map
+r13 = 0xdeadbeef           ; what it was before
