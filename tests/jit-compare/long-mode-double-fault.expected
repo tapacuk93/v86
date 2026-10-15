@@ -1,0 +1,6 @@
+; What long-mode-double-fault.asm leaves behind. Values are hex, as in every one of these files.
+; r12 holds cr2 and is left unasserted; the asm says why.
+r8  = 0x1                  ; the #df handler ran
+r9  = 0x0                  ; #df's error code is always zero
+r10 = 0x1                  ; and it came in on the stack its gate named
+r11 = 0x0                  ; the #pf handler never ran: its stack could not be written
