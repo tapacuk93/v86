@@ -2700,6 +2700,15 @@ pub unsafe fn do_page_walk(
             allow_write_upper &= pml4_entry as i32 & PAGE_TABLE_RW_MASK != 0;
             allow_user &= pml4_entry as i32 & PAGE_TABLE_USER_MASK != 0;
 
+            // The accessed bit belongs on every level the walk goes through, not only the lower
+            // two. Windows reads it on the upper levels to decide whether a page table page is
+            // itself still in use, and a level that never records being used reads as never used.
+            // Only the low byte is written, which is where both this bit and dirty live, so the
+            // rest of the entry is left exactly as the guest wrote it.
+            if side_effects && pml4_entry as i32 & PAGE_TABLE_ACCESSED_MASK == 0 {
+                memory::write8(pml4_entry_addr, pml4_entry as i32 | PAGE_TABLE_ACCESSED_MASK);
+            }
+
             let pdpt_entry_addr =
                 (pml4_entry as u32 & 0xFFFFF000)
                     + (((((addr as u64) >> 30) & 0x1FF) as u32) << 3);
@@ -2723,6 +2732,10 @@ pub unsafe fn do_page_walk(
             );
             allow_write_upper &= pdpt_entry as i32 & PAGE_TABLE_RW_MASK != 0;
             allow_user &= pdpt_entry as i32 & PAGE_TABLE_USER_MASK != 0;
+
+            if side_effects && pdpt_entry as i32 & PAGE_TABLE_ACCESSED_MASK == 0 {
+                memory::write8(pdpt_entry_addr, pdpt_entry as i32 | PAGE_TABLE_ACCESSED_MASK);
+            }
 
             let page_dir_addr =
                 (pdpt_entry as u32 & 0xFFFFF000) + ((((addr as u32) >> 21) & 0x1FF) << 3);

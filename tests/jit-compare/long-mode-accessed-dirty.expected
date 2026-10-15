@@ -1,0 +1,9 @@
+; What long-mode-accessed-dirty.asm leaves behind. Values are hex, as in every one of these files.
+; 20 is accessed, 40 is dirty, 80 on a page directory entry is a large page.
+r8  = 0x14023              ; pml4[1], accessed by the walk
+r9  = 0x15023              ; pdpt[0], accessed
+r10 = 0x16023              ; pd[0], accessed
+r11 = 0x30023              ; pt[0], accessed by a read and not dirty
+r12 = 0x31063              ; pt[1], accessed and dirty: that page was written
+r13 = 0x2000e3             ; pd[1], a large page, so this entry is the one that takes dirty
+r14 = 0x15023              ; pdpt[0] after both writes, still accessed and still not dirty
