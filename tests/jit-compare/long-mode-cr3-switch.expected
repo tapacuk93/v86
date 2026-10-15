@@ -1,0 +1,7 @@
+; What long-mode-cr3-switch.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0xdeadbeef           ; virtual 0x400000 in space A
+r9  = 0x11111111           ; virtual 0x401000 in space A, through a global entry
+r10 = 0xcafef00d           ; the same address after a cr3 write means space B's page
+r11 = 0x22222222           ; and so does the global one, once changing cr4.pge has dropped it
+r12 = 0xdeadbeef           ; switching back finds space A's page, not the one just read
+r13 = 0x11111111           ; including through the global entry
