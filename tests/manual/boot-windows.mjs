@@ -143,7 +143,15 @@ function virtual_ms()
     // and then no timer can come due, and nothing ever wakes it. The machine deadlocks against its
     // own clock, which looks exactly like the guest hanging and is not the guest's doing at all.
     // Time has to keep moving across a halt; real time is what it moves by, since there is nothing
-    // else running to measure. Only the idle stretches depend on the host, not the execution.
+    // else running to measure.
+    //
+    // The cost of that, which is worth knowing before trusting a run: the idle stretches are part
+    // of the clock, so a busy host does not merely slow a run down. It lengthens every halt in
+    // clock terms, which moves where each timer interrupt lands in the instruction stream, which
+    // is the one thing DETERMINISTIC exists to hold still. Two runs of the same build on a host
+    // under load average 40 took visibly different paths through a windows boot. The summary at
+    // the end reports how much of the clock came from halts for exactly this reason: when that
+    // share is large the run is a different experiment from a quiet one, whatever it shows.
     if(clock_cpu.in_hlt && clock_cpu.in_hlt[0])
     {
         const t = real_now();
@@ -641,6 +649,19 @@ function finish() {
     {
         note(`  ${(100 * n / total).toFixed(1).padStart(5)}%  ${n.toString().padStart(5)}  eip=${eip}`);
     }
+    const clock_ms = virtual_ms();
+    if(clock_ms > 0)
+    {
+        const share = 100 * halted_ms / clock_ms;
+        note(`\n== clock: ${(clock_ms / 1000).toFixed(0)}s, of which ${(halted_ms / 1000).toFixed(0)}s (${share.toFixed(0)}%) came from halts`);
+        if(share > 50)
+        {
+            note("  More than half the clock is idle time measured against the host, so where the");
+            note("  timer interrupts landed depended on how busy this machine was. Compare with a");
+            note("  run made on a quiet host before concluding anything from where this one got to.");
+        }
+    }
+
     const mode_total = [...modes.values()].reduce((a, b) => a + b, 0);
     note("\n== where the samples were, and whether interrupts were open");
     for(const [name, n] of [...modes].sort((a, b) => b[1] - a[1]))
