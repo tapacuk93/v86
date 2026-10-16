@@ -1,0 +1,9 @@
+; What long-mode-sse-shuffle.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x400000003          ; shufps, the destination's lanes 2 and 3
+r9  = 0x600000005          ; and the source's lanes 0 and 1
+r10 = 0x500000001          ; unpcklps, the two low halves interleaved
+r11 = 0x600000002          ; and the next pair
+r12 = 0xffffffffffffffff   ; cmpps equal against itself: every lane all ones
+r13 = 0xffffffff           ; cmpss less than: the low lane only
+r14 = 0x10001000100010     ; psllw by four
+r15 = 0x400000004          ; psrld by two
