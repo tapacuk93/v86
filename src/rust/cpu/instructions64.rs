@@ -4698,9 +4698,10 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             true
         },
 
-        // the shift-by-immediate group on an xmm register: psrlq, psrldq, psllq and pslldq. Only
-        // the register form exists, and rex.b extends which xmm register it names.
-        0x73 => {
+        // the shift-by-immediate groups on an xmm register: psrlw/psraw/psllw (71),
+        // psrld/psrad/pslld (72), and psrlq/psrldq/psllq/pslldq (73). Only the register form
+        // exists in any of them, and rex.b extends which xmm register it names.
+        0x71 | 0x72 | 0x73 => {
             use crate::cpu::instructions_0f as i0f;
             let modrm_byte = match read_imm8() {
                 Ok(o) => o,
@@ -4713,18 +4714,147 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
             let r = modrm_rm(modrm_byte);
             if !has_66 || modrm_byte < 0xC0 {
-                dbg_log!("Unimplemented: 64-bit 0f73 66={} mod={}", has_66, modrm_byte >> 6);
+                dbg_log!(
+                    "Unimplemented: 64-bit 0f{:02x} 66={} mod={}",
+                    opcode,
+                    has_66,
+                    modrm_byte >> 6
+                );
                 return false;
             }
-            match modrm_byte >> 3 & 7 {
-                2 => i0f::instr_660F73_2_reg(r, imm),
-                3 => i0f::instr_660F73_3_reg(r, imm),
-                6 => i0f::instr_660F73_6_reg(r, imm),
-                7 => i0f::instr_660F73_7_reg(r, imm),
-                group => {
-                    dbg_log!("Unimplemented: 64-bit 0f73 /{}", group);
+            match (opcode, modrm_byte >> 3 & 7) {
+                (0x71, 2) => i0f::instr_660F71_2_reg(r, imm),
+                (0x71, 4) => i0f::instr_660F71_4_reg(r, imm),
+                (0x71, 6) => i0f::instr_660F71_6_reg(r, imm),
+                (0x72, 2) => i0f::instr_660F72_2_reg(r, imm),
+                (0x72, 4) => i0f::instr_660F72_4_reg(r, imm),
+                (0x72, 6) => i0f::instr_660F72_6_reg(r, imm),
+                (0x73, 2) => i0f::instr_660F73_2_reg(r, imm),
+                (0x73, 3) => i0f::instr_660F73_3_reg(r, imm),
+                (0x73, 6) => i0f::instr_660F73_6_reg(r, imm),
+                (0x73, 7) => i0f::instr_660F73_7_reg(r, imm),
+                (_, group) => {
+                    dbg_log!("Unimplemented: 64-bit 0f{:02x} /{}", opcode, group);
                     return false;
                 },
+            }
+            true
+        },
+
+        // unpcklps and unpcklpd: interleave the low halves of the two registers. The source is 64
+        // bits, not the 128 the packed family beside them reads.
+        0x14 => {
+            use crate::cpu::instructions_0f as i0f;
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let r = modrm_reg(modrm_byte);
+            let source = if modrm_byte >= 0xC0 {
+                read_xmm64s(modrm_rm(modrm_byte)) as u64
+            }
+            else {
+                let addr = match resolve_modrm64(modrm_byte) {
+                    Ok(a) => a,
+                    Err(()) => return true,
+                };
+                match safe_read64s_64(addr) {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            };
+            if 0 != *prefixes & crate::prefix::PREFIX_66 {
+                i0f::instr_660F14(source, r);
+            }
+            else {
+                i0f::instr_0F14(source, r);
+            }
+            true
+        },
+
+        // cmpps/cmpss/cmppd/cmpsd (c2) and shufps/shufpd (c6): a packed or scalar operation whose
+        // immediate says which comparison, or which lanes to take. The immediate comes after the
+        // operand, so it is read last whatever the operand turned out to be.
+        0xC2 | 0xC6 => {
+            use crate::cpu::instructions_0f as i0f;
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let has_66 = 0 != *prefixes & crate::prefix::PREFIX_66;
+            let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+            let has_f2 = 0 != *prefixes & crate::prefix::PREFIX_F2;
+            let r = modrm_reg(modrm_byte);
+
+            // The scalar compares read 32 or 64 bits rather than 128, for the same reason movss
+            // and movsd do.
+            if opcode == 0xC2 && (has_f3 || has_f2) {
+                if has_f3 {
+                    let source = if modrm_byte >= 0xC0 {
+                        read_xmm64s(modrm_rm(modrm_byte)) as i32
+                    }
+                    else {
+                        let addr = match resolve_modrm64(modrm_byte) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read32s_64(addr) {
+                            Ok(v) => v,
+                            Err(()) => return true,
+                        }
+                    };
+                    let imm = match read_imm8() {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    };
+                    i0f::instr_F30FC2(source, r, imm);
+                }
+                else {
+                    let source = if modrm_byte >= 0xC0 {
+                        read_xmm64s(modrm_rm(modrm_byte)) as u64
+                    }
+                    else {
+                        let addr = match resolve_modrm64(modrm_byte) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read64s_64(addr) {
+                            Ok(v) => v,
+                            Err(()) => return true,
+                        }
+                    };
+                    let imm = match read_imm8() {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    };
+                    i0f::instr_F20FC2(source, r, imm);
+                }
+                return true;
+            }
+
+            let source = if modrm_byte >= 0xC0 {
+                read_xmm128s(modrm_rm(modrm_byte))
+            }
+            else {
+                let addr = match resolve_modrm64(modrm_byte) {
+                    Ok(a) => a,
+                    Err(()) => return true,
+                };
+                match safe_read128s_64(addr) {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            };
+            let imm = match read_imm8() {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            match (opcode, has_66) {
+                (0xC2, false) => i0f::instr_0FC2(source, r, imm),
+                (0xC2, true) => i0f::instr_660FC2(source, r, imm),
+                (0xC6, false) => i0f::instr_0FC6(source, r, imm),
+                (0xC6, true) => i0f::instr_660FC6(source, r, imm),
+                _ => return false,
             }
             true
         },
