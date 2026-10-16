@@ -3094,6 +3094,30 @@ pub unsafe fn run(opcode: i32) -> bool {
 }
 
 /// The 0x0F escaped opcodes
+
+/// The integer a scalar float to integer conversion produces, at either width.
+///
+/// x86 answers a nan, an infinity or a value outside the destination's range with the "integer
+/// indefinite" constant - the most negative value - rather than by wrapping, and the range differs
+/// between the two widths, so the check has to be made against the width actually being written.
+fn sse_convert_to_int(x: f64, truncate: bool, wide: bool) -> i64 {
+    let x = if truncate { x.trunc() } else { unsafe { crate::cpu::sse_instr::sse_integer_round(x) } };
+    if wide {
+        if x >= -9223372036854775808.0 && x < 9223372036854775808.0 {
+            x as i64
+        }
+        else {
+            i64::MIN
+        }
+    }
+    else if x >= -2147483648.0 && x < 2147483648.0 {
+        x as i64
+    }
+    else {
+        -0x8000_0000
+    }
+}
+
 unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
     match opcode {
         // syscall. The fast path into a 64-bit kernel: no descriptor table read, no stack switch,
@@ -3323,6 +3347,94 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         // express, so those two are done here rather than delegated. The operand width cannot come
         // from osize either: the 0x66 here is the mandatory prefix selecting the sse form, not an
         // operand size override, so without rex.w the operand is 32 bits rather than 16.
+        // The scalar conversions between an integer register and a float: cvtsi2ss and cvtsi2sd
+        // (2a), and the two ways back, cvttss2si/cvttsd2si (2c, truncating) and cvtss2si/cvtsd2si
+        // (2d, rounding as mxcsr says). The f3 prefix makes the float side single and f2 makes it
+        // double; the unprefixed and 66 forms convert to and from mmx and are not these.
+        //
+        // rex.w makes the *integer* side 64 bits, which the 32-bit implementations cannot express
+        // - they read a 32-bit source and write a 32-bit register - so both widths are done here.
+        0x2A | 0x2C | 0x2D => {
+            let has_f3 = 0 != *prefixes & crate::prefix::PREFIX_F3;
+            let has_f2 = 0 != *prefixes & crate::prefix::PREFIX_F2;
+            if !has_f3 && !has_f2 {
+                // cvtpi2ps and friends, whose operand is an mmx register
+                return false;
+            }
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let r = modrm_reg(modrm_byte);
+            let wide = 0 != *rex & REX_W;
+
+            if opcode == 0x2A {
+                let source = if modrm_byte >= 0xC0 {
+                    let v = read_reg64(modrm_rm(modrm_byte));
+                    if wide { v } else { v as i32 as i64 }
+                }
+                else {
+                    let addr = match resolve_modrm64(modrm_byte) {
+                        Ok(a) => a,
+                        Err(()) => return true,
+                    };
+                    let v = if wide {
+                        safe_read64s_64(addr).map(|v| v as i64)
+                    }
+                    else {
+                        safe_read32s_64(addr).map(|v| v as i64)
+                    };
+                    match v {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    }
+                };
+                if has_f3 {
+                    write_xmm_f32(r, source as f32);
+                }
+                else {
+                    write_xmm_f64(r, source as f64);
+                }
+            }
+            else {
+                let source = if has_f3 {
+                    let bits = if modrm_byte >= 0xC0 {
+                        read_xmm64s(modrm_rm(modrm_byte)) as u32
+                    }
+                    else {
+                        let addr = match resolve_modrm64(modrm_byte) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read32s_64(addr) {
+                            Ok(v) => v as u32,
+                            Err(()) => return true,
+                        }
+                    };
+                    f32::from_bits(bits) as f64
+                }
+                else {
+                    let bits = if modrm_byte >= 0xC0 {
+                        read_xmm64s(modrm_rm(modrm_byte)) as u64
+                    }
+                    else {
+                        let addr = match resolve_modrm64(modrm_byte) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read64s_64(addr) {
+                            Ok(v) => v,
+                            Err(()) => return true,
+                        }
+                    };
+                    f64::from_bits(bits)
+                };
+                let result = sse_convert_to_int(source, opcode == 0x2C, wide);
+                write_reg_sized(r, result, if wide { 64 } else { 32 });
+            }
+            true
+        },
+
         // ucomiss/ucomisd (2e) and comiss/comisd (2f): compare one scalar float against another
         // and set the flags from it, which is how compiled floating point code branches. The two
         // pairs differ only in which kind of nan signals, and the 66 prefix selects double rather

@@ -1,0 +1,9 @@
+; What long-mode-cvtsi.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x4000000000000000   ; 2.0 as a double
+r9  = 0x40000000           ; 2.0 as a single, the rest of the register untouched by the write
+r10 = 0x4014000000000000   ; 5.0, converted from a 32-bit source in memory
+r11 = 0x3                  ; 3.5 truncated
+r12 = 0x4                  ; 3.5 rounded to nearest, ties to even
+r13 = 0xfffffffe           ; -2.75 truncated into a 32-bit register, which zero extends
+r14 = 0x8000000000000000   ; infinity does not wrap: the 64-bit integer indefinite
+r15 = 0x80000000           ; and 2^40 is out of range for a 32-bit destination
