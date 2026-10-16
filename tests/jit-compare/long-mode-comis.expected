@@ -1,0 +1,11 @@
+; What long-mode-comis.asm leaves behind. Values are hex, as in every one of these files.
+; Each is the flags after one compare, masked to zf|pf|cf: 40 is equal, 1 is less, 0 is greater,
+; and 45 is unordered.
+r8  = 0x0                  ; ucomiss, register, greater
+r9  = 0x1                  ; ucomiss, register, less
+r10 = 0x40                 ; ucomiss, register, equal
+r11 = 0x0                  ; ucomiss, 32 bits out of memory
+r12 = 0x45                 ; ucomiss against a nan
+r13 = 0x0                  ; ucomisd, 64 bits out of memory
+r14 = 0x40                 ; comisd, register, equal
+r15 = 0x1                  ; comiss, register, less

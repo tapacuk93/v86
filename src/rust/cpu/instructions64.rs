@@ -3323,6 +3323,66 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         // express, so those two are done here rather than delegated. The operand width cannot come
         // from osize either: the 0x66 here is the mandatory prefix selecting the sse form, not an
         // operand size override, so without rex.w the operand is 32 bits rather than 16.
+        // ucomiss/ucomisd (2e) and comiss/comisd (2f): compare one scalar float against another
+        // and set the flags from it, which is how compiled floating point code branches. The two
+        // pairs differ only in which kind of nan signals, and the 66 prefix selects double rather
+        // than single - so the source is 32 bits wide without it and 64 bits with it, neither of
+        // which the 128-bit source table above can express.
+        //
+        // Fed from the value taking forms rather than the _mem ones, so the memory operand is a
+        // full 64-bit address.
+        0x2E | 0x2F => {
+            use crate::cpu::instructions_0f as i0f;
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let r = modrm_reg(modrm_byte);
+            if 0 != *prefixes & crate::prefix::PREFIX_66 {
+                let source = if modrm_byte >= 0xC0 {
+                    read_xmm64s(modrm_rm(modrm_byte))
+                }
+                else {
+                    let addr = match resolve_modrm64(modrm_byte) {
+                        Ok(a) => a,
+                        Err(()) => return true,
+                    };
+                    match safe_read64s_64(addr) {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    }
+                };
+                if opcode == 0x2E {
+                    i0f::instr_660F2E(source, r)
+                }
+                else {
+                    i0f::instr_660F2F(source, r)
+                }
+            }
+            else {
+                let source = if modrm_byte >= 0xC0 {
+                    f32::from_bits(read_xmm64s(modrm_rm(modrm_byte)) as u32)
+                }
+                else {
+                    let addr = match resolve_modrm64(modrm_byte) {
+                        Ok(a) => a,
+                        Err(()) => return true,
+                    };
+                    match safe_read32s_64(addr) {
+                        Ok(v) => f32::from_bits(v as u32),
+                        Err(()) => return true,
+                    }
+                };
+                if opcode == 0x2E {
+                    i0f::instr_0F2E(source, r)
+                }
+                else {
+                    i0f::instr_0F2F(source, r)
+                }
+            }
+            true
+        },
+
         0x6E | 0x7E | 0x16 | 0x17 => {
             use crate::cpu::instructions_0f as i0f;
             let modrm_byte = match read_imm8() {
