@@ -38,6 +38,11 @@
 //                    a result. Better to stop and say so.
 //   HOT_FROM=n       ignore the first n seconds in the hot-address report, so that a phase late in
 //                    the boot is not drowned out by the phases that worked
+//   HDA=path         attach a writable disk at that path, creating it sparse if it is not there,
+//                    and keep booting the install medium first. Windows setup runs without one but
+//                    has nowhere to install to
+//   HDA_GB=n         how large to make it when creating (default 24, which is what windows 10 asks
+//                    for; the file is sparse, so only what the guest writes costs anything)
 //   SAVE_AT=n        write the whole machine to OUT/state.bin after n seconds
 //   RESTORE=path     start from a state written that way instead of booting. The frontier of this
 //                    work is several minutes into a boot, and re-reaching it for every experiment
@@ -211,6 +216,9 @@ const HOT_FROM = +process.env.HOT_FROM || 0;
 // instruction stream either way, so there is nothing to give up on.
 const MIN_MIPS = process.env.MIN_MIPS !== undefined ? +process.env.MIN_MIPS
     : DETERMINISTIC ? 0 : 8;
+// A disk to install onto. Without one windows setup runs but has nowhere to put anything.
+const HDA = process.env.HDA || "";
+const HDA_GB = +process.env.HDA_GB || 24;
 const SAVE_AT = +process.env.SAVE_AT || 0;
 const RESTORE = process.env.RESTORE || "";
 const KEYS_AT = (process.env.KEYS_AT || "").split(",").filter(Boolean).map(Number);
@@ -293,11 +301,63 @@ class IsoBuffer
     set_state(state) {}
 }
 
+
+// A writable disk, file backed and sparse: the bytes cost nothing until the guest writes them, so
+// a disk large enough for windows to agree to install on it does not cost that much of the host's.
+// Unlike the install medium this has to take writes, and they have to survive the reboot in the
+// middle of an installation, which is why it is a file rather than memory.
+class DiskBuffer
+{
+    constructor(path, size)
+    {
+        if(!fs.existsSync(path))
+        {
+            const fd = fs.openSync(path, "w");
+            fs.ftruncateSync(fd, size);
+            fs.closeSync(fd);
+            note(`created ${path}, ${(size / (1 << 30)).toFixed(0)} GiB and empty`);
+        }
+        this.fd = fs.openSync(path, "r+");
+        this.byteLength = fs.fstatSync(this.fd).size;
+        this.onload = undefined;
+        this.onprogress = undefined;
+    }
+    load() { this.onload && this.onload({}); }
+    get(start, len, fn)
+    {
+        const block = Buffer.alloc(len);
+        fs.readSync(this.fd, block, 0, len, start);
+        fn(new Uint8Array(block.buffer, block.byteOffset, len));
+    }
+    set(start, slice, fn)
+    {
+        fs.writeSync(this.fd, Buffer.from(slice.buffer, slice.byteOffset, slice.length),
+                     0, slice.length, start);
+        fn && fn();
+    }
+    // A file is already as cached as it needs to be, so the two cache shaped methods the ide
+    // code expects are just reads. The synchronous one has to hand the block back rather than
+    // call anything.
+    get_and_cache(start, len, fn) { this.get(start, len, fn); }
+    get_from_cache(start, len)
+    {
+        const block = Buffer.alloc(len);
+        fs.readSync(this.fd, block, 0, len, start);
+        return new Uint8Array(block.buffer, block.byteOffset, len);
+    }
+    get_buffer(fn) { fn(); }
+    get_state() { return []; }
+    set_state(state) {}
+}
+
 const emulator = new V86({
     wasm_path: __dirname + "../../build/v86-debug.wasm",
     bios: { url: __dirname + "../../bios/seabios.bin" },
     vga_bios: { url: __dirname + "../../bios/vgabios.bin" },
     cdrom: new IsoBuffer(iso),
+    // Attaching a disk makes the starter prefer booting from it; say otherwise, or an empty disk
+    // is chosen over the install medium and nothing happens at all.
+    ...(HDA ? { hda: new DiskBuffer(HDA, HDA_GB * (1 << 30)), boot_order: 0x123 } : {}),
     memory_size: MEMORY,
     vga_memory_size: 32 * 1024 * 1024,
     // Windows x64 has no support for a machine without acpi, and drives its timer through the
