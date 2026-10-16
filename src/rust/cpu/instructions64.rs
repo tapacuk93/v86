@@ -3220,6 +3220,15 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 read_reg64(ECX) as i32 as u32 as i64
             };
             after_block_boundary();
+
+            // The flags came back out of r11, so this is one of the places the interrupt flag goes
+            // back on, and anything that arrived while the kernel had them closed has to be let
+            // through here. The kernel always has them closed on this path - sfmask clears the
+            // flag on the way in - so every sysret is such a moment. Waiting for the main loop's
+            // next check instead defers the interrupt, and loses it outright if the guest closes
+            // them again before then, which a process making one system call after another does
+            // constantly. iret, popf and sti all end this way for the same reason.
+            handle_irqs();
             true
         },
 
