@@ -2893,7 +2893,16 @@ pub unsafe fn run(opcode: i32) -> bool {
             *sreg.offset(SS as isize) = ss as u16;
 
             *instruction_pointer = rip;
+            // Whether iret may put the interrupt flag back is decided by the privilege of the code
+            // that executed it, not by the one being returned to: `update_eflags` refuses when cpl
+            // is above iopl, and a kernel returning to user mode has cpl 0 against an iopl of 0,
+            // so it is allowed. Asking with the new cpl instead refuses, and the thread lands in
+            // user mode with interrupts disabled - a state no hardware can produce, since the only
+            // ways into cpl 3 are iret and sysret and neither can leave it that way. The 32-bit
+            // iret has always updated the flags before changing cpl, for this reason.
+            *cpl = old_cpl;
             update_eflags(rflags as i32);
+            *cpl = new_cpl;
             write_reg64(ESP, new_rsp);
             update_state_flags();
             after_block_boundary();

@@ -1,0 +1,6 @@
+; What long-mode-iret-iflag.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x1                  ; iret to cpl 3 put the interrupt flag back, asked for by the frame
+r9  = 0x1                  ; popf at cpl 3 could not take it away again, iopl being 0
+r10 = 0x0                  ; and a frame asking for it clear is honoured the same way
+r11 = 0x0                  ; the interrupt gate itself closed them on the way in
+r12 = 0x1                  ; and iret restores them without a privilege change too
