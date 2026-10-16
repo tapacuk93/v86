@@ -1,0 +1,9 @@
+; What long-mode-packed-convert.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x400000003f800000   ; cvtdq2ps: 1 and 2 as singles
+r9  = 0x200000001          ; cvttps2dq: 1.5 and 2.5 truncated
+r10 = 0xfffffffeffffffff   ; and -1.5 and -2.5, truncated towards zero rather than down
+r11 = 0x3ff0000000000000   ; cvtdq2pd: 1.0
+r12 = 0x4000000000000000   ; and 2.0, from the low half of the source only
+r13 = 0x300000002          ; cvtpd2dq: 2.0 and 3.0 back to integers
+r14 = 0x4000000000000000   ; movddup put the low double in the high half too
+r15 = 0xbeef00000000       ; pinsrw into the third word
