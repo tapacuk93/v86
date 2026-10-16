@@ -1,0 +1,5 @@
+; What long-mode-sysret-flags.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x202                ; the flags user mode arrived with, exactly what r11 asked for
+r9  = 0x1                  ; the interrupt flag on, though the kernel executing sysret had it off
+r10 = 0x0                  ; and off again when r11 asked for that
+r12 = 0x0                  ; vm and rf were set in r11 and sysret let neither through
