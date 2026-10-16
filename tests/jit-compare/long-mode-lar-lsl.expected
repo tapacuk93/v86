@@ -1,0 +1,8 @@
+; What long-mode-lar-lsl.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0xabcd               ; lsl of a byte granular limit
+r9  = 0x1fff               ; lsl of a page granular one, reported in bytes
+r10 = 0x9200               ; lar of the same descriptor, its access rights
+r11 = 0x1                  ; zf said the selector was readable
+r12 = 0xdead               ; a null selector leaves the destination alone
+r13 = 0x0                  ; and clears zf
+r14 = 0xabcd               ; rex.w writes the whole register, zero extending the limit
