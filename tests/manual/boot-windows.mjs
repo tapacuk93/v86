@@ -49,6 +49,9 @@
 //                    is most of the cost of an experiment
 //   KEYS_AT=n,m,...  press a key at each of these times, in seconds. A guest polling int 16h is
 //                    waiting for one; whether pressing it changes anything says which guest it is
+//   SCRIPT=t:key,... press named keys at given times, which is how a dialog driven guest is told
+//                    what to do: SCRIPT=2400:enter,2425:alt+a,2430:enter. Names are enter, tab,
+//                    space, esc, the arrows, a few letters, and alt+x for a dialog's accelerators
 //   KEYS_EVERY=n     press one every n seconds instead. Prefer this: a boot's phases move around
 //                    by minutes depending on what else the host is doing, and a key pressed in the
 //                    wrong phase is a wasted run rather than an obvious failure
@@ -664,10 +667,46 @@ if(SAVE_AT)
     }, SAVE_AT * 1000);
 }
 
+
+// The keys a script can name. Windows setup is a series of dialogs with a default button, so most
+// of driving it is enter and tab; the rest are here because a dialog that needs an arrow or a
+// space is not worth a whole code change to reach.
+const SCANCODES = {
+    enter: 0x1c, tab: 0x0f, space: 0x39, esc: 0x01, backspace: 0x0e,
+    up: 0xe048, down: 0xe050, left: 0xe04b, right: 0xe04d,
+    home: 0xe047, end: 0xe04f, del: 0xe053,
+    a: 0x1e, c: 0x2e, d: 0x20, i: 0x17, n: 0x31, u: 0x16, y: 0x15,
+};
+
+// alt is held across the key when a name is written alt+x, which is how a dialog's accelerators
+// are reached - windows setup's licence page accepts with alt+a.
+function scancodes_for(name)
+{
+    let alt = false;
+    if(name.startsWith("alt+")) { alt = true; name = name.slice(4); }
+    const code = SCANCODES[name];
+    if(code === undefined) return null;
+    const down = code > 0xFF ? [code >> 8, code & 0xFF] : [code];
+    const up = code > 0xFF ? [code >> 8, (code & 0xFF) | 0x80] : [code | 0x80];
+    return alt ? [0x38, ...down, ...up, 0xb8] : [...down, ...up];
+}
+
 function press_enter()
 {
     note(`[${stamp()}s] ** pressing enter`);
     emulator.keyboard_send_scancodes([0x1c, 0x9c]);
+}
+
+function press_named(name)
+{
+    const codes = scancodes_for(name);
+    if(!codes)
+    {
+        note(`[${stamp()}s] ** no scancode for '${name}', skipped`);
+        return;
+    }
+    note(`[${stamp()}s] ** pressing ${name}`);
+    emulator.keyboard_send_scancodes(codes);
 }
 
 // A deterministic run schedules everything on the guest's clock. That is the point of the exercise:
@@ -677,10 +716,24 @@ function press_enter()
 const virtual_pending = KEYS_AT.slice().sort((a, b) => a - b);
 let virtual_every_next = KEYS_EVERY;
 
+// A script is a list of time:key pairs on the same clock, which is how a dialog driven guest is
+// told what to do: `SCRIPT=2400:enter,2412:enter,2425:alt+a,2430:enter`. Times are seconds, and
+// the whole point of putting them on the virtual clock is that the same script reaches the same
+// dialog on a busy host as on a quiet one.
+const script_pending = (process.env.SCRIPT || "")
+    .split(",")
+    .filter(Boolean)
+    .map(entry => {
+        const [at, key] = entry.split(":");
+        return { at: +at, key: (key || "enter").trim() };
+    })
+    .sort((a, b) => a.at - b.at);
+
 function virtual_schedule()
 {
     const now = virtual_ms() / 1000;
     while(virtual_pending.length && virtual_pending[0] <= now) { virtual_pending.shift(); press_enter(); }
+    while(script_pending.length && script_pending[0].at <= now) { press_named(script_pending.shift().key); }
     if(KEYS_EVERY && now >= virtual_every_next) { virtual_every_next += KEYS_EVERY; press_enter(); }
     if(now >= run_seconds) finish();
 }
@@ -688,6 +741,7 @@ function virtual_schedule()
 if(!DETERMINISTIC)
 {
     for(const at of KEYS_AT) setTimeout(press_enter, at * 1000);
+    for(const step of script_pending) setTimeout(() => press_named(step.key), step.at * 1000);
     if(KEYS_EVERY) setInterval(press_enter, KEYS_EVERY * 1000);
 }
 
