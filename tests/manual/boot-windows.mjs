@@ -628,6 +628,12 @@ function finish() {
     clearInterval(shooter);
     screenshot("final");
 
+    // A run that ends without the guest resetting never passes through the reboot hook, so ask the
+    // emulator for whatever trace it is keeping here as well. A wedge produces no reset and is
+    // exactly the case where the trace is wanted.
+    try { clock_cpu && clock_cpu.wm.exports["xdump_trace"] && clock_cpu.wm.exports["xdump_trace"](); }
+    catch(e) { note("  could not dump the trace: " + e); }
+
     const ranked = [...hot].sort((a, b) => b[1] - a[1]).slice(0, 15);
     const total = [...hot.values()].reduce((a, b) => a + b, 0);
     note("\n== where the run spent its samples" + (HOT_FROM ? ` after ${HOT_FROM}s` : "") + " (" + total + " samples, " + hot.size + " distinct eips)");
