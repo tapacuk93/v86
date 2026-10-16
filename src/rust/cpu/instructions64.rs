@@ -3383,6 +3383,51 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
         // express, so those two are done here rather than delegated. The operand width cannot come
         // from osize either: the 0x66 here is the mandatory prefix selecting the sse form, not an
         // operand size override, so without rex.w the operand is 32 bits rather than 16.
+        // lar and lsl: read a descriptor's access rights or its limit, with zf saying whether the
+        // selector named anything usable. Unprivileged code is allowed both, and windows uses lsl
+        // for it - ntdll reads the current processor number out of a descriptor's limit, which is
+        // how it knew which cpu it was on before rdpid existed, so user mode reaches this early.
+        //
+        // The selector operand is always 16 bits whatever the operand size; the operand size is
+        // the destination's. When the selector is unusable the destination is left alone, which is
+        // what zf is for.
+        0x02 | 0x03 => {
+            if !*protected_mode || vm86_mode() {
+                dbg_log!("#ud lar/lsl outside protected mode");
+                trigger_ud();
+                return true;
+            }
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let r = modrm_reg(modrm_byte);
+            let selector = if modrm_byte >= 0xC0 {
+                read_reg64(modrm_rm(modrm_byte)) as i32 & 0xFFFF
+            }
+            else {
+                let addr = match resolve_modrm64(modrm_byte) {
+                    Ok(a) => a,
+                    Err(()) => return true,
+                };
+                match safe_read16_64(addr) {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            };
+            let original = read_reg64(r) as i32;
+            let value = if opcode == 0x02 {
+                crate::cpu::misc_instr::lar(selector, original)
+            }
+            else {
+                crate::cpu::misc_instr::lsl(selector, original)
+            };
+            if getzf() {
+                write_reg_sized(r, value as u32 as i64, osize);
+            }
+            true
+        },
+
         // The scalar conversions between an integer register and a float: cvtsi2ss and cvtsi2sd
         // (2a), and the two ways back, cvttss2si/cvttsd2si (2c, truncating) and cvtss2si/cvtsd2si
         // (2d, rounding as mxcsr says). The f3 prefix makes the float side single and f2 makes it
