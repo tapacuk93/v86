@@ -1,0 +1,9 @@
+; What long-mode-scalar-math.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x41200000           ; addss, 10.0f
+r9  = 0x40c00000           ; subss with a 32-bit memory operand, 6.0f
+r10 = 0x41800000           ; mulss, 16.0f
+r11 = 0x40800000           ; divss, 4.0f
+r12 = 0x40800000           ; sqrtss of 16, 4.0f
+r13 = 0x40000000           ; minss of 8 and 2, 2.0f
+r14 = 0x4000000000000000   ; cvtss2sd, 2.0
+r15 = 0x4024000000000000   ; addsd with a 64-bit memory operand, 10.0

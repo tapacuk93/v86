@@ -3118,6 +3118,42 @@ fn sse_convert_to_int(x: f64, truncate: bool, wide: bool) -> i64 {
     }
 }
 
+
+/// The f3-prefixed scalar single operations: one 32-bit float in, acting on the low float of an
+/// xmm register and leaving the rest of it alone.
+fn sse_f3_scalar_op(opcode: i32) -> Option<unsafe fn(f32, i32)> {
+    use crate::cpu::instructions_0f as i;
+    Some(match opcode {
+        0x51 => i::instr_F30F51,
+        0x52 => i::instr_F30F52,
+        0x53 => i::instr_F30F53,
+        0x58 => i::instr_F30F58,
+        0x59 => i::instr_F30F59,
+        0x5A => i::instr_F30F5A,
+        0x5C => i::instr_F30F5C,
+        0x5D => i::instr_F30F5D,
+        0x5E => i::instr_F30F5E,
+        0x5F => i::instr_F30F5F,
+        _ => return None,
+    })
+}
+
+/// The f2-prefixed scalar double operations, which are the same set one width up.
+fn sse_f2_scalar_op(opcode: i32) -> Option<unsafe fn(u64, i32)> {
+    use crate::cpu::instructions_0f as i;
+    Some(match opcode {
+        0x51 => i::instr_F20F51,
+        0x58 => i::instr_F20F58,
+        0x59 => i::instr_F20F59,
+        0x5A => i::instr_F20F5A,
+        0x5C => i::instr_F20F5C,
+        0x5D => i::instr_F20F5D,
+        0x5E => i::instr_F20F5E,
+        0x5F => i::instr_F20F5F,
+        _ => return None,
+    })
+}
+
 unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
     match opcode {
         // syscall. The fast path into a 64-bit kernel: no descriptor table read, no stack switch,
@@ -3624,6 +3660,55 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     }
                 }
                 return true;
+            }
+
+            // The scalar float arithmetic: add, subtract, multiply, divide, min, max, square
+            // root and the two single/double conversions, whose f3 or f2 prefix makes the source
+            // 32 or 64 bits rather than 128. They cannot go through the 128-bit shape below for
+            // the same reason movss and movsd cannot: reading 128 bits where the guest asked for
+            // 32 touches memory it never named, which faults when the operand ends a page.
+            //
+            // The destination is the low float of an xmm register and the rest of it is left as
+            // it was, which is what the existing implementations already do.
+            if has_f3 {
+                if let Some(op) = sse_f3_scalar_op(opcode) {
+                    let r = modrm_reg(modrm_byte);
+                    let bits = if modrm_byte >= 0xC0 {
+                        read_xmm64s(modrm_rm(modrm_byte)) as u32
+                    }
+                    else {
+                        let addr = match resolve_modrm64(modrm_byte) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read32s_64(addr) {
+                            Ok(v) => v as u32,
+                            Err(()) => return true,
+                        }
+                    };
+                    op(f32::from_bits(bits), r);
+                    return true;
+                }
+            }
+            else if has_f2 {
+                if let Some(op) = sse_f2_scalar_op(opcode) {
+                    let r = modrm_reg(modrm_byte);
+                    let source = if modrm_byte >= 0xC0 {
+                        read_xmm64s(modrm_rm(modrm_byte)) as u64
+                    }
+                    else {
+                        let addr = match resolve_modrm64(modrm_byte) {
+                            Ok(a) => a,
+                            Err(()) => return true,
+                        };
+                        match safe_read64s_64(addr) {
+                            Ok(v) => v,
+                            Err(()) => return true,
+                        }
+                    };
+                    op(source, r);
+                    return true;
+                }
             }
 
             // A memory operand here is a whole 128-bit access, and windows makes them through
