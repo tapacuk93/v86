@@ -3154,6 +3154,28 @@ fn sse_f2_scalar_op(opcode: i32) -> Option<unsafe fn(u64, i32)> {
     })
 }
 
+
+/// The 128-bit source operations whose mandatory prefix is not 0x66 - the packed conversions and
+/// the horizontal adds, which the 66 table beside them cannot name because it is keyed by opcode
+/// alone.
+fn sse_other_source_op(
+    opcode: i32,
+    has_66: bool,
+    has_f3: bool,
+    has_f2: bool,
+) -> Option<unsafe fn(reg128, i32)> {
+    use crate::cpu::instructions_0f as i;
+    Some(match (opcode, has_66, has_f3, has_f2) {
+        (0x5B, false, false, false) => i::instr_0F5B,
+        (0x5B, false, true, false) => i::instr_F30F5B,
+        (0xE6, false, false, true) => i::instr_F20FE6,
+        (0x12, false, true, false) => i::instr_F30F12,
+        (0x7C, false, false, true) => i::instr_F20F7C,
+        (0x7D, false, false, true) => i::instr_F20F7D,
+        _ => return None,
+    })
+}
+
 unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
     match opcode {
         // syscall. The fast path into a 64-bit kernel: no descriptor table read, no stack switch,
@@ -3641,7 +3663,8 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             }
         },
 
-        0x10 | 0x11 | 0x15 | 0x28 | 0x29 | 0x2B | 0x2C | 0x2D | 0x51 | 0x54 | 0x55 | 0x56 |
+        0x10 | 0x11 | 0x12 | 0x15 | 0x28 | 0x29 | 0x2B | 0x2C | 0x2D | 0x51 | 0x54 | 0x55 |
+        0x56 |
         0x57 | 0x58 | 0x59 | 0x5A | 0x5B | 0x5C | 0x5D | 0x5E | 0x5F | 0x60 | 0x61 | 0x62 |
         0x63 | 0x64 | 0x65 | 0x66 | 0x67 | 0x68 | 0x69 | 0x6A | 0x6B | 0x6C | 0x6D | 0x6F |
         0x74 | 0x75 | 0x76 | 0x7C | 0x7D | 0x7F | 0xD1 | 0xD2 | 0xD3 | 0xD4 | 0xD5 | 0xD8 |
@@ -3678,6 +3701,50 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                     op(source, r);
                     return true;
                 }
+            }
+
+            // The same 128-bit shape, for the ones whose mandatory prefix is not 0x66, and the
+            // two that read 64 bits and spread them: movddup and cvtdq2pd.
+            if let Some(op) = sse_other_source_op(opcode, has_66, has_f3, has_f2) {
+                let r = modrm_reg(modrm_byte);
+                let source = if modrm_byte >= 0xC0 {
+                    read_xmm128s(modrm_rm(modrm_byte))
+                }
+                else {
+                    let addr = match resolve_modrm64(modrm_byte) {
+                        Ok(a) => a,
+                        Err(()) => return true,
+                    };
+                    match safe_read128s_64(addr) {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    }
+                };
+                op(source, r);
+                return true;
+            }
+            if (opcode == 0x12 && has_f2) || (opcode == 0xE6 && has_f3) {
+                let r = modrm_reg(modrm_byte);
+                let source = if modrm_byte >= 0xC0 {
+                    read_xmm64s(modrm_rm(modrm_byte)) as u64
+                }
+                else {
+                    let addr = match resolve_modrm64(modrm_byte) {
+                        Ok(a) => a,
+                        Err(()) => return true,
+                    };
+                    match safe_read64s_64(addr) {
+                        Ok(v) => v,
+                        Err(()) => return true,
+                    }
+                };
+                if opcode == 0x12 {
+                    i0f::instr_F20F12(source, r);
+                }
+                else {
+                    i0f::instr_F30FE6(source, r);
+                }
+                return true;
             }
 
             // movss and movsd, whose f3 or f2 prefix narrows the access to 32 or 64 bits. They are
@@ -4778,6 +4845,41 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             else {
                 i0f::instr_0F14(source, r);
             }
+            true
+        },
+
+        // pinsrw: put one 16-bit value into a chosen lane of an xmm register. Its source is a
+        // general purpose register or 16 bits of memory, not an xmm register, which is why it is
+        // not in the family above.
+        0xC4 => {
+            use crate::cpu::instructions_0f as i0f;
+            if 0 == *prefixes & crate::prefix::PREFIX_66 {
+                dbg_log!("Unimplemented: 64-bit 0fc4 without 66, an mmx form");
+                return false;
+            }
+            let modrm_byte = match read_imm8() {
+                Ok(o) => o,
+                Err(()) => return true,
+            };
+            let r = modrm_reg(modrm_byte);
+            let source = if modrm_byte >= 0xC0 {
+                read_reg64(modrm_rm(modrm_byte)) as i32 & 0xFFFF
+            }
+            else {
+                let addr = match resolve_modrm64(modrm_byte) {
+                    Ok(a) => a,
+                    Err(()) => return true,
+                };
+                match safe_read16_64(addr) {
+                    Ok(v) => v,
+                    Err(()) => return true,
+                }
+            };
+            let imm = match read_imm8() {
+                Ok(v) => v,
+                Err(()) => return true,
+            };
+            i0f::instr_660FC4(source, r, imm);
             true
         },
 
