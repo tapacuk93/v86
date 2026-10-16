@@ -1,0 +1,10 @@
+; What long-mode-packed-single.asm leaves behind. Values are hex, as in every one of these files.
+; Each is the low two lanes of a four-lane result.
+r8  = 0x4080000040400000   ; addps: 3.0f 4.0f
+r9  = 0x4080000040000000   ; mulps: 2.0f 4.0f
+r10 = 0x3f8000003f000000   ; divps: 0.5f 1.0f
+r11 = 0xbf800000           ; subps: -1.0f and 0.0f, whose bits are zero
+r12 = 0x400000003f800000   ; minps: 1.0f 2.0f
+r13 = 0x4080000040000000   ; sqrtps of 4 and 16: 2.0f 4.0f
+r14 = 0x0                  ; xorps against itself
+r15 = 0x3ff0000000000000   ; cvtps2pd: 1.0 as a double

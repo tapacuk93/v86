@@ -3166,6 +3166,18 @@ fn sse_other_source_op(
 ) -> Option<unsafe fn(reg128, i32)> {
     use crate::cpu::instructions_0f as i;
     Some(match (opcode, has_66, has_f3, has_f2) {
+        // The packed single family, which has no mandatory prefix at all - the 0x66 beside each
+        // of these is the packed double form and the f3/f2 ones are the scalars.
+        (0x51, false, false, false) => i::instr_0F51,
+        (0x54, false, false, false) => i::instr_0F54,
+        (0x55, false, false, false) => i::instr_0F55,
+        (0x56, false, false, false) => i::instr_0F56,
+        (0x58, false, false, false) => i::instr_0F58,
+        (0x59, false, false, false) => i::instr_0F59,
+        (0x5C, false, false, false) => i::instr_0F5C,
+        (0x5D, false, false, false) => i::instr_0F5D,
+        (0x5E, false, false, false) => i::instr_0F5E,
+        (0x5F, false, false, false) => i::instr_0F5F,
         (0x5B, false, false, false) => i::instr_0F5B,
         (0x5B, false, true, false) => i::instr_F30F5B,
         (0xE6, false, false, true) => i::instr_F20FE6,
@@ -3723,7 +3735,12 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                 op(source, r);
                 return true;
             }
-            if (opcode == 0x12 && has_f2) || (opcode == 0xE6 && has_f3) {
+            // cvtps2pd reads two singles - 64 bits - and widens them to two doubles, so it sits
+            // with the other two that read 64 and spread them rather than with the family above.
+            if (opcode == 0x12 && has_f2)
+                || (opcode == 0xE6 && has_f3)
+                || (opcode == 0x5A && !has_66 && !has_f3 && !has_f2)
+            {
                 let r = modrm_reg(modrm_byte);
                 let source = if modrm_byte >= 0xC0 {
                     read_xmm64s(modrm_rm(modrm_byte)) as u64
@@ -3738,11 +3755,10 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
                         Err(()) => return true,
                     }
                 };
-                if opcode == 0x12 {
-                    i0f::instr_F20F12(source, r);
-                }
-                else {
-                    i0f::instr_F30FE6(source, r);
+                match opcode {
+                    0x12 => i0f::instr_F20F12(source, r),
+                    0x5A => i0f::instr_0F5A(source, r),
+                    _ => i0f::instr_F30FE6(source, r),
                 }
                 return true;
             }
