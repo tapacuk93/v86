@@ -38,6 +38,10 @@
 //                    a result. Better to stop and say so.
 //   HOT_FROM=n       ignore the first n seconds in the hot-address report, so that a phase late in
 //                    the boot is not drowned out by the phases that worked
+//   FDA=path         attach a floppy image, which is how an answer file reaches windows setup
+//   SERIAL_EXPECT=s  watch the guest's serial port for this string and report whether it came.
+//                    A guest that says anything at all has booted, logged in and run a program
+//   STOP_ON_SERIAL=1 stop as soon as it does, rather than running out the clock
 //   HDA=path         attach a writable disk at that path, creating it sparse if it is not there,
 //                    and keep booting the install medium first. Windows setup runs without one but
 //                    has nowhere to install to
@@ -221,6 +225,14 @@ const MIN_MIPS = process.env.MIN_MIPS !== undefined ? +process.env.MIN_MIPS
     : DETERMINISTIC ? 0 : 8;
 // A disk to install onto. Without one windows setup runs but has nowhere to put anything.
 const HDA = process.env.HDA || "";
+// A floppy, which is how an answer file reaches windows setup: it looks for autounattend.xml on
+// removable media before it draws anything.
+const FDA = process.env.FDA || "";
+// What the guest is expected to say on its serial port, and whether to stop as soon as it does.
+// A guest that can say anything at all has booted, logged in and run a program, which is a great
+// deal more than a screenshot can establish.
+const SERIAL_EXPECT = process.env.SERIAL_EXPECT || "";
+const STOP_ON_SERIAL = process.env.STOP_ON_SERIAL === "1";
 const HDA_GB = +process.env.HDA_GB || 24;
 const SAVE_AT = +process.env.SAVE_AT || 0;
 const RESTORE = process.env.RESTORE || "";
@@ -361,6 +373,7 @@ const emulator = new V86({
     // Attaching a disk makes the starter prefer booting from it; say otherwise, or an empty disk
     // is chosen over the install medium and nothing happens at all.
     ...(HDA ? { hda: new DiskBuffer(HDA, HDA_GB * (1 << 30)), boot_order: 0x123 } : {}),
+    ...(FDA ? { fda: { buffer: new Uint8Array(fs.readFileSync(FDA)).buffer } } : {}),
     memory_size: MEMORY,
     vga_memory_size: 32 * 1024 * 1024,
     // Windows x64 has no support for a machine without acpi, and drives its timer through the
@@ -396,7 +409,25 @@ emulator.add_listener("emulator-loaded", async () => {
     // its early boot fails, so this is the signal that something went wrong, and when.
     const cpu = emulator.v86.cpu;
     clock_cpu = cpu;
-    const reboot = cpu.reboot_internal.bind(cpu);
+    emulator.add_listener("serial0-output-byte", byte => {
+    const ch = String.fromCharCode(byte);
+    serial_text += ch;
+    if(serial_text.length > 1 << 16) serial_text = serial_text.slice(-(1 << 15));
+    if(ch === "\n")
+    {
+        const line = serial_text.slice(serial_text.lastIndexOf("\n", serial_text.length - 2) + 1).trim();
+        if(line) note(`[${stamp()}s] serial: ${line}`);
+    }
+    if(SERIAL_EXPECT && serial_seen_at === null && serial_text.includes(SERIAL_EXPECT))
+    {
+        serial_seen_at = stamp();
+        note(`[${serial_seen_at}s] ** the guest said '${SERIAL_EXPECT}' on its serial port`);
+        screenshot("serial-marker");
+        if(STOP_ON_SERIAL) setTimeout(finish, 2000);
+    }
+});
+
+const reboot = cpu.reboot_internal.bind(cpu);
     cpu.reboot_internal = function() {
         reboots++;
         note(`[${stamp()}s] ** RESET #${reboots} ` +
@@ -496,6 +527,13 @@ function screenshot(tag)
 // instruction_counter is a u32 that wraps, so accumulate the deltas rather than reading it once.
 let last_counter = 0;
 let instructions = 0;
+
+// Everything the guest writes to its first serial port. Windows will not say a word here unless
+// it has booted far enough to log a session in and run something in it, which is why the marker an
+// answer file sends is worth more than any number of screenshots. Module scope, because the
+// verdict at the end of the run reads them.
+let serial_text = "";
+let serial_seen_at = null;
 
 const spaces = new Set();
 const modes = new Map();
@@ -767,6 +805,27 @@ function finish() {
     {
         note(`  ${(100 * n / total).toFixed(1).padStart(5)}%  ${n.toString().padStart(5)}  eip=${eip}`);
     }
+    // The verdict, when the run was asked to look for something. Everything above is description;
+    // this is the one line that says whether what was asked for happened.
+    if(SERIAL_EXPECT)
+    {
+        note("\n== verdict");
+        if(serial_seen_at !== null)
+        {
+            note(`  PASS: the guest reached a logged in desktop and spoke at ${serial_seen_at}s`);
+            note(`  resets along the way: ${reboots}` +
+                 (reboots ? " (an installation reboots itself several times)" : ""));
+        }
+        else
+        {
+            note(`  FAIL: '${SERIAL_EXPECT}' never came out of the serial port`);
+            note(`  resets: ${reboots}; last screen is ${OUT}/screen-final.png`);
+            note("  Nothing was heard from the guest, so it did not finish installing, did not");
+            note("  log in, or could not open the port. The screenshots say which.");
+            process.exitCode = 1;
+        }
+    }
+
     const clock_ms = virtual_ms();
     if(clock_ms > 0)
     {
@@ -794,7 +853,9 @@ function finish() {
 
     log_file.end();
     emulator.destroy();
-    process.exit(0);
+    // Exit with whatever the verdict decided, not with success regardless. A test that always
+    // reports success is not a test.
+    process.exit(process.exitCode || 0);
 }
 
 // The wall clock still ends a run that is not deterministic, and backstops one that is: if the
