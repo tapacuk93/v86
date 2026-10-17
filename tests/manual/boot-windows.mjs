@@ -294,6 +294,17 @@ function png(width, height, rgba)
 // A class rather than an object literal, because v86's state serializer refuses anything whose
 // constructor is Object - see save_object in src/state.js. A plain literal works right up until
 // something tries to save the machine, which is exactly when it is least convenient to find out.
+// How much of the install medium to keep in memory, and in what size of piece. A guest reads a
+// disc in sectors, and an installer reads the same few structures over and over while it walks the
+// image it is copying from - so a cache of whole chunks turns a great many host reads into none.
+//
+// Bounded on purpose. v86's own file buffer caches every block it ever reads and evicts nothing,
+// which on a windows installation means hundreds of megabytes of the host's memory given over to a
+// copy of an iso that is already on disk - and on a machine short of memory that is worse than the
+// syscalls it saves, because what gets pushed out is the guest's own ram.
+const ISO_CHUNK = 256 * 1024;
+const ISO_CHUNKS = 160;                     // 40 MB
+
 class IsoBuffer
 {
     constructor(path)
@@ -302,13 +313,49 @@ class IsoBuffer
         this.byteLength = fs.fstatSync(this.fd).size;
         this.onload = undefined;
         this.onprogress = undefined;
+        this.cache = new Map();             // chunk index -> Uint8Array, in insertion order
+        this.hits = 0;
+        this.misses = 0;
     }
     load() { this.onload && this.onload({}); }
-    get(start, len, fn)
+    chunk(index)
     {
+        const hit = this.cache.get(index);
+        if(hit)
+        {
+            // A Map iterates in insertion order, so deleting and reinserting is what moves an
+            // entry to the end and makes the eviction below least-recently-used.
+            this.hits++;
+            this.cache.delete(index);
+            this.cache.set(index, hit);
+            return hit;
+        }
+        this.misses++;
+        const start = index * ISO_CHUNK;
+        const len = Math.min(ISO_CHUNK, this.byteLength - start);
         const block = Buffer.alloc(len);
         fs.readSync(this.fd, block, 0, len, start);
-        fn(new Uint8Array(block.buffer, block.byteOffset, len));
+        const bytes = new Uint8Array(block.buffer, block.byteOffset, len);
+        this.cache.set(index, bytes);
+        while(this.cache.size > ISO_CHUNKS) this.cache.delete(this.cache.keys().next().value);
+        return bytes;
+    }
+    get(start, len, fn)
+    {
+        const out = new Uint8Array(len);
+        let at = start;
+        while(at < start + len)
+        {
+            const index = Math.floor(at / ISO_CHUNK);
+            const block = this.chunk(index);
+            const block_start = index * ISO_CHUNK;
+            const from = at - block_start;
+            const take = Math.min(block.length - from, start + len - at);
+            if(take <= 0) break;            // past the end of the image
+            out.set(block.subarray(from, from + take), at - start);
+            at += take;
+        }
+        fn(out);
     }
     set(start, slice, fn) { throw new Error("the install medium is read-only"); }
     get_buffer(fn) { fn(); }
@@ -365,11 +412,13 @@ class DiskBuffer
     set_state(state) {}
 }
 
+const medium = new IsoBuffer(iso);
+
 const emulator = new V86({
     wasm_path: __dirname + "../../build/v86-debug.wasm",
     bios: { url: __dirname + "../../bios/seabios.bin" },
     vga_bios: { url: __dirname + "../../bios/vgabios.bin" },
-    cdrom: new IsoBuffer(iso),
+    cdrom: medium,
     // Attaching a disk makes the starter prefer booting from it; say otherwise, or an empty disk
     // is chosen over the install medium and nothing happens at all.
     ...(HDA ? { hda: new DiskBuffer(HDA, HDA_GB * (1 << 30)), boot_order: 0x123 } : {}),
@@ -825,6 +874,13 @@ function finish() {
             note("  log in, or could not open the port. The screenshots say which.");
             process.exitCode = 1;
         }
+    }
+
+    if(medium && medium.hits + medium.misses)
+    {
+        const total = medium.hits + medium.misses;
+        note(`\n== install medium: ${total.toLocaleString()} reads, ` +
+             `${(100 * medium.hits / total).toFixed(1)}% served from memory`);
     }
 
     const clock_ms = virtual_ms();
