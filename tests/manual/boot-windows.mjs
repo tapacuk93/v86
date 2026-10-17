@@ -648,8 +648,12 @@ const shooter = setInterval(() => {
     };
     note(`  ivt: int 1a -> ${vector(0x1a)}   int 16 -> ${vector(0x16)}   int 8 -> ${vector(8)}`);
 
+    // Two clocks, and saying which is which matters: everything else in this log is stamped with
+    // the guest's, and a line stamped with the host's reads as the guest having run four times
+    // further than it has. The rate is instructions per *real* second, which is the one worth
+    // knowing - it says whether this machine is giving the run a whole core or a quarter of one.
     const seconds = (real_now() - start) / 1000;
-    note(`[${seconds.toFixed(1)}s] eip=${state().eip} ` +
+    note(`[${stamp()}s guest, ${seconds.toFixed(0)}s wall] eip=${state().eip} ` +
          `(${(instructions / seconds / 1e6).toFixed(1)} million instructions/s)`);
     screenshot(tag);
 }, SHOT_MS);
