@@ -476,6 +476,7 @@ function state()
 
 function screenshot(tag)
 {
+    if(!emulator || !emulator.v86 || !emulator.v86.cpu) return;
     const vga = emulator.v86.cpu.devices.vga;
     if(vga)
     {
@@ -860,4 +861,12 @@ function finish() {
 
 // The wall clock still ends a run that is not deterministic, and backstops one that is: if the
 // guest wedges and stops retiring instructions, its clock stops with it and would never get here.
-setTimeout(finish, run_seconds * 1000 * (DETERMINISTIC ? 8 : 1));
+// A backstop in real time, in case the virtual clock stops moving: a guest that never retires
+// another instruction never reaches its own deadline. Under DETERMINISTIC the guest's clock can
+// legitimately run far behind the host's, so the backstop is given room.
+//
+// Clamped, because setTimeout takes a 32-bit millisecond count and node silently turns anything
+// larger into one millisecond - which fires `finish` before the emulator has been built, and ends
+// a run that was meant to last hours in under a second.
+const BACKSTOP_LIMIT = 2147483647;
+setTimeout(finish, Math.min(run_seconds * 1000 * (DETERMINISTIC ? 8 : 1), BACKSTOP_LIMIT));
