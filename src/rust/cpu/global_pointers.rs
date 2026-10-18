@@ -88,6 +88,11 @@ pub const tr_base: *mut i64 = 384 as *mut i64;
 /// The low halves are mirrored into `dreg` for the 32-bit paths.
 pub const dreg64: *mut i64 = 392 as *mut i64; // 8 64-bit entries, to 456
 
+/// IA32_TSC_AUX, which rdtscp hands back beside the timestamp. A kernel puts the processor's own
+/// number in it, so that a thread can tell which processor it read the counter on and discard the
+/// reading if it has since moved. One processor here, so what a guest reads is whatever it wrote.
+pub const tsc_aux: *mut i32 = 456 as *mut i32;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;

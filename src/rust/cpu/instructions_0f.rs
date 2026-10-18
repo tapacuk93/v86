@@ -800,8 +800,11 @@ pub unsafe fn instr_0F22(r: i32, creg: i32) {
         3 => set_cr3(data),
         4 => {
             dbg_log!("cr4 <- {:x}", data);
+            // Bit 16 is cr4.fsgsbase, which is allowed now that the four instructions it gates
+            // are implemented. The rest of these are features nothing here has, and a guest that
+            // asks for one must be told no rather than have it silently ignored.
             if 0 != data as u32
-                & ((1 << 11 | 1 << 12 | 1 << 15 | 1 << 16 | 1 << 19) as u32 | 0xFFC00000)
+                & ((1 << 11 | 1 << 12 | 1 << 15 | 1 << 19) as u32 | 0xFFC00000)
             {
                 dbg_log!("trigger_gp: Invalid cr4 bit");
                 trigger_gp(0);
@@ -1294,6 +1297,8 @@ pub unsafe fn instr_0F30() {
         IA32_FS_BASE => set_segment_base64(FS, (high as i64) << 32 | (low as u32 as i64)),
         IA32_GS_BASE => set_segment_base64(GS, (high as i64) << 32 | (low as u32 as i64)),
         IA32_KERNEL_GS_BASE => *gs_base_kernel = (high as i64) << 32 | (low as u32 as i64),
+        // IA32_TSC_AUX. Thirty-two bits wide whatever is written, and read back by rdtscp.
+        IA32_TSC_AUX => *tsc_aux = low,
         IA32_PERFEVTSEL0 | IA32_PERFEVTSEL1 => {}, // linux/9legacy
         IA32_PMC0 | IA32_PMC1 => {},               // linux
         IA32_PAT => {
@@ -1374,6 +1379,7 @@ pub unsafe fn instr_0F32() {
                 IA32_FS_BASE => *fs_base,
                 IA32_GS_BASE => *gs_base,
                 IA32_KERNEL_GS_BASE => *gs_base_kernel,
+                IA32_TSC_AUX => *tsc_aux as u32 as i64,
                 IA32_STAR => *star,
                 IA32_LSTAR => *lstar,
                 IA32_CSTAR => *cstar,
@@ -3448,7 +3454,8 @@ pub unsafe fn instr_0FA2() {
         7 => {
             if read_reg32(ECX) == 0 {
                 eax = 0; // maximum supported sub-level
-                ebx = 1 << 9; // enhanced REP MOVSB/STOSB
+                // fsgsbase, and enhanced rep movsb/stosb
+                ebx = 1 << 0 | 1 << 9;
                 ecx = 0;
                 // ia32_arch_capabilities exists. What it says is that this processor needs none of
                 // the speculation mitigations, which is true of one that does not speculate - and
@@ -3478,6 +3485,8 @@ pub unsafe fn instr_0FA2() {
                 // thousand would otherwise be - and only uses them because this bit says it may,
                 // which is why it is set here and was not before they worked.
                 edx |= 1 << 26;
+                // rdtscp, which comes with IA32_TSC_AUX beside it.
+                edx |= 1 << 27;
                 // syscall and sysret. Windows makes every system call through syscall, so a
                 // processor that does not advertise it is of no use to the kernel whatever else it
                 // supports. They were implemented earlier without this bit ever being set, which is

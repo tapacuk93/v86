@@ -4033,6 +4033,23 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             // with the one held in IA32_KERNEL_GS_BASE. It exists so that a kernel entered from
             // user mode can reach its per-cpu block in one instruction, and windows uses it on
             // every interrupt and system call.
+            // rdtscp: the timestamp counter, and beside it whatever the kernel put in
+            // IA32_TSC_AUX - its own number for this processor, so that a thread can tell whether
+            // it has moved between reading the counter twice. Serialising on real hardware in a
+            // way nothing here needs to model: one instruction runs at a time.
+            if modrm_byte == 0xF9 {
+                if 0 != *cpl && 0 != *cr.offset(4) & CR4_TSD {
+                    trigger_gp(0);
+                    return true;
+                }
+                let tsc = read_tsc();
+                // Every one of the three is a 32-bit write, so all three zero extend.
+                write_reg_sized(EAX, tsc as u32 as i64, 32);
+                write_reg_sized(EDX, (tsc >> 32) as u32 as i64, 32);
+                write_reg_sized(ECX, *tsc_aux as u32 as i64, 32);
+                return true;
+            }
+
             if modrm_byte == 0xF8 {
                 if 0 != *cpl {
                     trigger_gp(0);
@@ -4671,6 +4688,41 @@ unsafe fn run_0f(opcode: i32, osize: i32) -> bool {
             let group = modrm_byte >> 3 & 7;
 
             if modrm_byte >= 0xC0 {
+                // rdfsbase, rdgsbase, wrfsbase, wrgsbase: read and write the fs and gs bases
+                // without a trip through wrmsr, and so without needing ring 0 at all. A 64-bit
+                // kernel uses them wherever it would otherwise have had to make a system call,
+                // and they exist only in 64-bit mode.
+                //
+                // cr4.fsgsbase is what makes them legal: a guest that has not asked for them must
+                // see #ud, because on a processor without the feature that is what it would get.
+                if matches!(group, 0 | 1 | 2 | 3)
+                    && 0 != *prefixes & crate::prefix::PREFIX_F3
+                {
+                    if 0 == *cr.offset(4) & CR4_FSGSBASE {
+                        dbg_log!("#ud fsgsbase with cr4.fsgsbase clear");
+                        trigger_ud();
+                        return true;
+                    }
+                    let r = modrm_rm(modrm_byte);
+                    let wide = 0 != *rex & REX_W;
+                    match group {
+                        0 => write_reg_sized(r, *fs_base, if wide { 64 } else { 32 }),
+                        1 => write_reg_sized(r, *gs_base, if wide { 64 } else { 32 }),
+                        _ => {
+                            // A 32-bit write zero extends, here as everywhere else, so the base
+                            // being set is the whole register either way.
+                            let value =
+                                if wide { read_reg64(r) } else { read_reg64(r) as u32 as i64 };
+                            if !is_canonical(value) {
+                                dbg_log!("#gp fsgsbase with a non-canonical base {:x}", value);
+                                trigger_gp(0);
+                                return true;
+                            }
+                            set_segment_base64(if group == 2 { FS } else { GS }, value);
+                        },
+                    }
+                    return true;
+                }
                 // the fences, which are the register forms of /5, /6 and /7
                 if !matches!(group, 5 | 6 | 7) {
                     dbg_log!("Unimplemented: 64-bit 0fae /{} reg", group);

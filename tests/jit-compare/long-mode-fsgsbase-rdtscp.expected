@@ -1,0 +1,8 @@
+; What long-mode-fsgsbase-rdtscp.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x1                  ; rdfsbase was #ud before cr4.fsgsbase asked for it
+r9  = 0xffff800012340000   ; a base in the high half survives the round trip
+r10 = 0x11112222           ; and a base written this way is the one fs accesses go through
+r11 = 0x33334444           ; the same for gs
+r12 = 0x41000              ; which reads back its own base, not fs's
+r13 = 0xffffffff           ; the 32-bit form zero extends, as every 32-bit write does
+r14 = 0x2a                 ; rdtscp hands back IA32_TSC_AUX beside the counter

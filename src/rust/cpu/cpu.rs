@@ -191,6 +191,9 @@ pub const CR4_PAE: i32 = 1 << 5;
 pub const CR4_PGE: i32 = 1 << 7;
 pub const CR4_OSFXSR: i32 = 1 << 9;
 pub const CR4_OSXMMEXCPT: i32 = 1 << 10;
+/// Lets unprivileged code read and write the fs and gs bases directly. Without it those four
+/// instructions are #ud, which is what a processor lacking the feature does.
+pub const CR4_FSGSBASE: i32 = 1 << 16;
 pub const CR4_SMEP: i32 = 1 << 20;
 
 pub const TSR_BACKLINK: i32 = 0x00;
@@ -290,6 +293,8 @@ pub const IA32_GS_BASE: i32 = 0xC0000101u32 as i32;
 /// The gs base that swapgs will bring into use. 0xC0000101 is the *active* gs base, which this was
 /// previously named after by mistake.
 pub const IA32_KERNEL_GS_BASE: i32 = 0xC0000102u32 as i32;
+/// What rdtscp reports in ecx beside the counter: a kernel's own number for this processor.
+pub const IA32_TSC_AUX: i32 = 0xC0000103u32 as i32;
 pub const MSR_AMD64_LS_CFG: i32 = 0xC0011020u32 as i32;
 pub const MSR_AMD64_DE_CFG: i32 = 0xC0011029u32 as i32;
 
