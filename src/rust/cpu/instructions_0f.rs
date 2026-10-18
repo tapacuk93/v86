@@ -1299,6 +1299,7 @@ pub unsafe fn instr_0F30() {
         IA32_KERNEL_GS_BASE => *gs_base_kernel = (high as i64) << 32 | (low as u32 as i64),
         // IA32_TSC_AUX. Thirty-two bits wide whatever is written, and read back by rdtscp.
         IA32_TSC_AUX => *tsc_aux = low,
+        IA32_TSC_ADJUST => *tsc_adjust = (high as i64) << 32 | (low as u32 as i64),
         IA32_PERFEVTSEL0 | IA32_PERFEVTSEL1 => {}, // linux/9legacy
         IA32_PMC0 | IA32_PMC1 => {},               // linux
         IA32_PAT => {
@@ -1374,12 +1375,13 @@ pub unsafe fn instr_0F32() {
             high = (v >> 32) as i32;
         },
         IA32_FS_BASE | IA32_GS_BASE | IA32_KERNEL_GS_BASE | IA32_STAR | IA32_LSTAR | IA32_CSTAR
-        | IA32_FMASK => {
+        | IA32_FMASK | IA32_TSC_AUX | IA32_TSC_ADJUST => {
             let value = match index {
                 IA32_FS_BASE => *fs_base,
                 IA32_GS_BASE => *gs_base,
                 IA32_KERNEL_GS_BASE => *gs_base_kernel,
                 IA32_TSC_AUX => *tsc_aux as u32 as i64,
+                IA32_TSC_ADJUST => *tsc_adjust,
                 IA32_STAR => *star,
                 IA32_LSTAR => *lstar,
                 IA32_CSTAR => *cstar,

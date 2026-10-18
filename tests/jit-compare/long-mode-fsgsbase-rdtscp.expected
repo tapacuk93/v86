@@ -5,4 +5,4 @@ r10 = 0x11112222           ; and a base written this way is the one fs accesses 
 r11 = 0x33334444           ; the same for gs
 r12 = 0x41000              ; which reads back its own base, not fs's
 r13 = 0xffffffff           ; the 32-bit form zero extends, as every 32-bit write does
-r14 = 0x2a                 ; rdtscp hands back IA32_TSC_AUX beside the counter
+r14 = 0x3                  ; rdtscp and rdmsr agree on IA32_TSC_AUX, by both paths

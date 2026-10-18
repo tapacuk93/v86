@@ -90,7 +90,20 @@ long_mode:
     wrmsr
     mov rcx, -1
     rdtscp
-    mov r14, rcx                            ; -> 0x2a, and zero extended
+    cmp rcx, 0x2A                           ; zero extended, so the whole register is 0x2a
+    sete r14b
+    movzx r14, r14b
+
+    ; and the same register read back the way it was written, which is a different path through
+    ; the msr table and was dead code once - the register was listed in an inner match whose outer
+    ; arm did not name it, so nothing ever reached it
+    mov ecx, 0xC0000103
+    rdmsr
+    cmp eax, 0x2A
+    sete bl
+    movzx rbx, bl
+    shl rbx, 1
+    or r14, rbx                             ; -> 3, both paths agree
 
     hlt
 

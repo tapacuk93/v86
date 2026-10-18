@@ -59,6 +59,26 @@ long_mode:
     shr r13d, 19
     and r13d, 1                             ; -> 0, sse4.1 is not claimed
 
+    ; Claiming a constant rate is not free: windows reads IA32_TSC_ADJUST as soon as it is told
+    ; the counter has one, to check that nothing has shifted it. Reading an msr this emulator does
+    ; not know is fatal, so the claim above and this register have to arrive together - which they
+    ; did not, and a boot died at it.
+    mov ecx, 0x3B
+    rdmsr
+    mov r14d, eax
+    or r14d, edx                            ; -> 0, nothing has shifted the counter
+
+    ; and it is a real register, not a hole that reads zero: what is written comes back
+    mov ecx, 0x3B
+    mov eax, 0x55667788
+    mov edx, 0x11223344
+    wrmsr
+    mov ecx, 0x3B
+    rdmsr
+    shl rdx, 32
+    or rdx, rax
+    mov r15, rdx                            ; -> 0x1122334455667788
+
     hlt
 
 %include "long-mode-epilogue.inc"

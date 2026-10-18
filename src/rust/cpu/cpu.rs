@@ -295,6 +295,9 @@ pub const IA32_GS_BASE: i32 = 0xC0000101u32 as i32;
 pub const IA32_KERNEL_GS_BASE: i32 = 0xC0000102u32 as i32;
 /// What rdtscp reports in ecx beside the counter: a kernel's own number for this processor.
 pub const IA32_TSC_AUX: i32 = 0xC0000103u32 as i32;
+/// How far software has shifted the timestamp counter. Windows reads it as soon as it is told the
+/// counter runs at a constant rate, to check that nothing has moved it.
+pub const IA32_TSC_ADJUST: i32 = 0x3B;
 pub const MSR_AMD64_LS_CFG: i32 = 0xC0011020u32 as i32;
 pub const MSR_AMD64_DE_CFG: i32 = 0xC0011029u32 as i32;
 

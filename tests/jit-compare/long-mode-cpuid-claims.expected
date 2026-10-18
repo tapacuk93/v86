@@ -5,3 +5,5 @@ r10 = 0x1                  ; rdtscp, proved by long-mode-fsgsbase-rdtscp
 r11 = 0x1                  ; fsgsbase, proved by the same
 r12 = 0x1                  ; the timestamp counter runs at a constant rate, which here it does
 r13 = 0x0                  ; and sse4.1 is not claimed, there being no three byte opcodes here
+r14 = 0x0                  ; nothing has shifted the counter, which is what a fresh one says
+r15 = 0x1122334455667788   ; and it is a real register: what is written comes back

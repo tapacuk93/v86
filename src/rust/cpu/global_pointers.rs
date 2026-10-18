@@ -93,6 +93,12 @@ pub const dreg64: *mut i64 = 392 as *mut i64; // 8 64-bit entries, to 456
 /// reading if it has since moved. One processor here, so what a guest reads is whatever it wrote.
 pub const tsc_aux: *mut i32 = 456 as *mut i32;
 
+/// IA32_TSC_ADJUST, the amount software has shifted the timestamp counter by. It exists so that
+/// several processors can be made to agree; with one there is nothing to agree with, so this is
+/// storage and the counter is never actually shifted. A guest reads back what it wrote, and reads
+/// zero before it has written anything, which is what "this counter has not been adjusted" means.
+pub const tsc_adjust: *mut i64 = 464 as *mut i64;
+
 pub const segment_access_bytes: *mut u8 = 512 as *mut u8; // TODO: reorder below segment_limits
 
 pub const apic_enabled: *mut bool = 548 as *mut bool;
