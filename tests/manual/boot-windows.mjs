@@ -588,6 +588,12 @@ let serial_seen_at = null;
 const spaces = new Set();
 const modes = new Map();
 let last_sample_at = real_now();
+// The previous rate sample, so each one can report the interval since the last rather than the
+// average since the beginning.
+let rate_last_real = 0;
+let rate_last_guest = 0;
+let rate_last_instr = 0;
+let slow_samples = 0;
 let starved = 0;
 let last_tick = -1;
 let ticks_seen = 0;
@@ -741,8 +747,33 @@ const shooter = setInterval(() => {
     // further than it has. The rate is instructions per *real* second, which is the one worth
     // knowing - it says whether this machine is giving the run a whole core or a quarter of one.
     const seconds = (real_now() - start) / 1000;
+    // Instantaneous, not cumulative. The average over a whole run decays so slowly that a guest
+    // which has stopped dead still reports a healthy figure for many minutes - which has twice
+    // been read as a stall that was not one, and once as health that was not either. What matters
+    // is how the guest's clock is moving against the host's right now: at parity the run is
+    // getting a whole core, and far below it the host is not giving this run memory and nothing
+    // it shows will mean much.
+    const window_real = seconds - rate_last_real;
+    const window_guest = virtual_ms() / 1000 - rate_last_guest;
+    const window_instr = instructions - rate_last_instr;
+    rate_last_real = seconds;
+    rate_last_guest = virtual_ms() / 1000;
+    rate_last_instr = instructions;
+    const mips = window_real > 0 ? window_instr / window_real / 1e6 : 0;
+    const pace = window_real > 0 ? window_guest / window_real : 1;
     note(`[${stamp()}s guest, ${seconds.toFixed(0)}s wall] eip=${state().eip} ` +
-         `(${(instructions / seconds / 1e6).toFixed(1)} million instructions/s)`);
+         `(${mips.toFixed(1)} million instructions/s, ` +
+         `guest clock at ${(pace * 100).toFixed(0)}% of real time)`);
+    // Only when it persists. Early boot is legitimately slow - the bios polls the keyboard and
+    // the timer through device code, and the guest retires very little in the process - so one
+    // low sample says nothing. Several in a row, long after that, is the host.
+    slow_samples = window_real > 0 && pace < 0.25 ? slow_samples + 1 : 0;
+    if(slow_samples === 4)
+    {
+        note("  The guest has been running far behind real time for several samples now. The");
+        note("  usual cause on this host is its memory being paged out, leaving the emulator");
+        note("  faulting rather than executing. Check free memory before trusting this run.");
+    }
     screenshot(tag);
 }, SHOT_MS);
 
