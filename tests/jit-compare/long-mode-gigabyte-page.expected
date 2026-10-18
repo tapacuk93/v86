@@ -1,0 +1,7 @@
+; What long-mode-gigabyte-page.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0xdeadbeef           ; read through a gigabyte page
+r9  = 0xcafef00d           ; and from far enough in to need thirty bits of offset
+r10 = 0xa3                 ; the entry, accessed by those reads and not yet dirty
+r11 = 0x12345678           ; a write through the page reaches the physical address
+r12 = 0xe3                 ; and sets dirty on the same entry, no lower one having been read
+r13 = 0x3ffff              ; the last page of the gigabyte is still within it

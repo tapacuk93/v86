@@ -3474,6 +3474,10 @@ pub unsafe fn instr_0FA2() {
                 1 << 23 | 1 << 24; // mmx, fxsr
             if config::ENABLE_LONG_MODE {
                 edx |= 1 << 29; // lm
+                // Gigabyte pages. A kernel maps physical memory with these - one entry where a
+                // thousand would otherwise be - and only uses them because this bit says it may,
+                // which is why it is set here and was not before they worked.
+                edx |= 1 << 26;
                 // syscall and sysret. Windows makes every system call through syscall, so a
                 // processor that does not advertise it is of no use to the kernel whatever else it
                 // supports. They were implemented earlier without this bit ever being set, which is

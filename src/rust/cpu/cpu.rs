@@ -2671,6 +2671,11 @@ pub unsafe fn do_page_walk(
     let long_mode = long_mode_active();
     // Permissions of the levels above the page directory, which only 4-level paging has
     let mut allow_write_upper = true;
+    // Set when the walk stopped at the page directory pointer level because the entry there maps
+    // a gigabyte directly. The entry is then handed to the large page path below as if it were a
+    // page directory entry - everything that path does is the same, except how much of the address
+    // is the offset within the page.
+    let mut gigabyte_page = false;
 
     if cr0 & CR0_PG == 0 {
         // paging disabled
@@ -2726,12 +2731,27 @@ pub unsafe fn do_page_walk(
                 }
                 return Err(());
             }
-            dbg_assert!(
-                pdpt_entry as i32 & PAGE_TABLE_PSE_MASK == 0,
-                "Unsupported: 1 GiB pages"
-            );
             allow_write_upper &= pdpt_entry as i32 & PAGE_TABLE_RW_MASK != 0;
             allow_user &= pdpt_entry as i32 & PAGE_TABLE_USER_MASK != 0;
+
+            // A gigabyte page: the size bit at this level ends the walk two levels early, the way
+            // it ends it one level early at the page directory. Kernels map physical memory with
+            // these - one entry where a thousand would otherwise be - so a guest that uses them
+            // uses them for everything, and the walk has to stop here rather than read the entry
+            // below as if it were a table.
+            //
+            // The accessed and dirty bits belong on this entry then, not on a level that is not
+            // being read, which is why it is handed to the large page path rather than handled
+            // separately: that path writes them back to the address it was given.
+            if 0 != pdpt_entry as i32 & PAGE_TABLE_PSE_MASK {
+                dbg_assert!(
+                    pdpt_entry as u64 & PAGE_ENTRY_ADDRESS_ABOVE_32 == 0,
+                    "Unsupported: 1 GiB page above 4 GiB"
+                );
+                gigabyte_page = true;
+                (pdpt_entry_addr, pdpt_entry as i32)
+            }
+            else {
 
             if side_effects && pdpt_entry as i32 & PAGE_TABLE_ACCESSED_MASK == 0 {
                 memory::write8(pdpt_entry_addr, pdpt_entry as i32 | PAGE_TABLE_ACCESSED_MASK);
@@ -2754,6 +2774,7 @@ pub unsafe fn do_page_walk(
             }
 
             (page_dir_addr, page_dir_entry as i32)
+            }
         }
         else if pae {
             let pdpt_entry = *reg_pdpte.offset(((addr as u32) >> 30) as isize);
@@ -2825,7 +2846,10 @@ pub unsafe fn do_page_walk(
                 memory::write8(page_dir_addr, new_page_dir_entry);
             }
 
-            high = if pae {
+            high = if gigabyte_page {
+                page_dir_entry as u32 & 0xC0000000 | (addr & 0x3FFFF000) as u32
+            }
+            else if pae {
                 page_dir_entry as u32 & 0xFFE00000 | (addr & 0x1FF000) as u32
             }
             else {
