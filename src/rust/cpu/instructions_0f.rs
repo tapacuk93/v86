@@ -3471,6 +3471,18 @@ pub unsafe fn instr_0FA2() {
             // other registers are reserved
         },
 
+        0x80000007 => {
+            // Power management. The one bit that matters is the invariant timestamp counter: it
+            // says the counter runs at a constant rate whatever the processor is doing, so an
+            // operating system may use it as a clock rather than only as a cycle count. Windows
+            // checks it before choosing the tsc as its time source.
+            //
+            // Truthful here rather than flattering. There are no power states to change rate
+            // with, the counter is derived from a monotonic source, and it never stops - which is
+            // the whole of what the bit claims. Reporting zero said the opposite.
+            edx = 1 << 8;
+        },
+
         0x80000001 => {
             // extended processor signature and feature bits
             // eax (extended family/model/stepping) is reserved on intel

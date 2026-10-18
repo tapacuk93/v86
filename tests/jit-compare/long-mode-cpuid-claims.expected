@@ -1,0 +1,7 @@
+; What long-mode-cpuid-claims.asm leaves behind. Values are hex, as in every one of these files.
+r8  = 0x1                  ; the extended leaves reach 0x80000007
+r9  = 0x1                  ; gigabyte pages, proved by long-mode-gigabyte-page
+r10 = 0x1                  ; rdtscp, proved by long-mode-fsgsbase-rdtscp
+r11 = 0x1                  ; fsgsbase, proved by the same
+r12 = 0x1                  ; the timestamp counter runs at a constant rate, which here it does
+r13 = 0x0                  ; and sse4.1 is not claimed, there being no three byte opcodes here
