@@ -38,6 +38,9 @@
 //                    a result. Better to stop and say so.
 //   HOT_FROM=n       ignore the first n seconds in the hot-address report, so that a phase late in
 //                    the boot is not drowned out by the phases that worked
+//   DISK_TRACE=1     report the first use of each storage command per drive, with the guest's
+//                    clock. Answers "did the guest ever address this disk at all", which is what
+//                    a drive the bios enumerates and the guest ignores comes down to
 //   FDA=path         attach a floppy image, which is how an answer file reaches windows setup
 //   SERIAL_EXPECT=s  watch the guest's serial port for this string and report whether it came.
 //                    A guest that says anything at all has booted, logged in and run a program
@@ -231,6 +234,7 @@ const FDA = process.env.FDA || "";
 // What the guest is expected to say on its serial port, and whether to stop as soon as it does.
 // A guest that can say anything at all has booted, logged in and run a program, which is a great
 // deal more than a screenshot can establish.
+const DISK_TRACE = process.env.DISK_TRACE === "1";
 const SERIAL_EXPECT = process.env.SERIAL_EXPECT || "";
 const STOP_ON_SERIAL = process.env.STOP_ON_SERIAL === "1";
 const HDA_GB = +process.env.HDA_GB || 24;
@@ -412,6 +416,35 @@ class DiskBuffer
     set_state(state) {}
 }
 
+// What the guest asks of each drive, which is the evidence a storage problem needs and the one
+// thing the disk log cannot give on its own: it reports every sector of a five gigabyte image,
+// and the few lines that matter are lost in it.
+//
+// Done by filtering rather than by wrapping the devices, which are sealed. Each distinct command
+// is reported once per drive, with the guest's clock at its first use, so a whole installation
+// fits in a few dozen lines. The question it exists to answer: when windows says it has no driver
+// for a disk the bios enumerated happily, did it ever address that disk at all?
+if(DISK_TRACE)
+{
+    const seen = new Set();
+    const underlying = console.log.bind(console);
+    console.log = (...args) => {
+        const line = args.length === 1 && typeof args[0] === "string" ? args[0] : args.join(" ");
+        const m = /\b(ide\d\.\d): (ATAPI|ATA) command ([^:(]*)/.exec(line);
+        if(!m)
+        {
+            // Anything that is not a disk line passes through, including this harness's own notes.
+            if(!/\[DISK\]/.test(line)) underlying(...args);
+            return;
+        }
+        const key = m[1] + " " + m[2] + " " + m[3].trim();
+        if(seen.has(key)) return;
+        seen.add(key);
+        underlying(`[${stamp()}s] disk: ${m[1]} first ${m[2]} ${m[3].trim()}`);
+    };
+    note("tracing the first use of each storage command, per drive");
+}
+
 const medium = new IsoBuffer(iso);
 
 const emulator = new V86({
@@ -432,7 +465,9 @@ const emulator = new V86({
     // A restore replaces the state a boot would have built, so there is nothing to start yet.
     autostart: !RESTORE,
     disable_jit: +process.env.DISABLE_JIT || 0,
-    log_level: +process.env.LOG_LEVEL || 0,
+    // 0x8000 is LOG_DISK, which the storage trace filters down to a few lines. Asking for it here
+    // rather than making the caller remember a magic number alongside DISK_TRACE.
+    log_level: (+process.env.LOG_LEVEL || 0) | (DISK_TRACE ? 0x8000 : 0),
     screen_dummy: true,
 });
 
@@ -475,6 +510,7 @@ emulator.add_listener("emulator-loaded", async () => {
         if(STOP_ON_SERIAL) setTimeout(finish, 2000);
     }
 });
+
 
 const reboot = cpu.reboot_internal.bind(cpu);
     cpu.reboot_internal = function() {
