@@ -440,7 +440,10 @@ if(DISK_TRACE)
         const key = m[1] + " " + m[2] + " " + m[3].trim();
         if(seen.has(key)) return;
         seen.add(key);
-        underlying(`[${stamp()}s] disk: ${m[1]} first ${m[2]} ${m[3].trim()}`);
+        // The whole line, not just the command: what the drive answered is the point. A command
+        // the guest issues once and gets an abort for is the shape of a device it then gives up
+        // on, and the status words are how that is told from a command that simply happened.
+        underlying(`[${stamp()}s] disk: ${line.replace(/^[\d:+\s]*\[DISK\]\s*/, "")}`);
     };
     note("tracing the first use of each storage command, per drive");
 }
