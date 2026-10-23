@@ -1674,40 +1674,82 @@ IDEInterface.prototype.atapi_handle = function()
             break;
 
         case ATAPI_CMD_GET_CONFIGURATION:
-            var length = Math.min(this.data[8] | this.data[7] << 8, 32);
-            dbg_log_extra = "length=" + length;
-            this.data_allocate(length);
-            this.data_end = this.data_length;
-            this.data[0] = length - 4 >> 24 & 0xFF;
-            this.data[1] = length - 4 >> 16 & 0xFF;
-            this.data[2] = length - 4 >> 8 & 0xFF;
-            this.data[3] = length - 4 & 0xFF;
-            this.data[6] = 0x08;
-            this.data[10] = 3;
-            this.status_reg = ATA_SR_DRDY|ATA_SR_DSC|ATA_SR_DRQ;
+            var length = this.data[8] | this.data[7] << 8;
+            dbg_log_extra = "rt=" + (this.data[1] & 3) + " start=" + h(this.data[3] | this.data[2] << 8) + " length=" + length;
+            this.atapi_reply(this.atapi_configuration(this.data[1] & 3, this.data[3] | this.data[2] << 8), length);
             break;
 
         case ATAPI_CMD_READ_DISK_INFORMATION:
-            this.data_allocate(0);
-            this.data_end = this.data_length;
-            this.status_reg = ATA_SR_DRDY|ATA_SR_DSC;
+            var length = this.data[8] | this.data[7] << 8;
+            dbg_log_extra = "type=" + (this.data[1] & 7) + " length=" + length;
+            if((this.data[1] & 7) !== 0)
+            {
+                this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
+                break;
+            }
+            // A pressed disc, finished: one session, one track, nothing more can be written.
+            // Answering with no data at all leaves the guest reading zeros here, and a disc
+            // status of zero means an empty disc - windows setup then looks at its own
+            // installation medium and says there is nothing in the drive.
+            var info = new Uint8Array(34);
+            info[1] = 32;       // length of what follows
+            info[2] = 0x0E;     // last session complete, disc complete
+            info[3] = 1;        // first track on the disc
+            info[4] = 1;        // sessions
+            info[5] = 1;        // first track in the last session
+            info[6] = 1;        // last track in the last session
+            info[7] = 0x20;     // unrestricted use
+            info[8] = 0x00;     // cd-rom or dvd-rom
+            this.atapi_reply(info, length);
             break;
 
         case ATAPI_CMD_READ_TRACK_INFORMATION:
-            dbg_log_extra = "unimplemented";
-            this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
+            var length = this.data[8] | this.data[7] << 8;
+            var address = this.data[2] << 24 | this.data[3] << 16 | this.data[4] << 8 | this.data[5];
+            var address_type = this.data[1] & 3;
+            dbg_log_extra = "type=" + address_type + " address=" + h(address >>> 0) + " length=" + length;
+            // The single data track there is: by lba anywhere on it, by track number 1, or by
+            // session number 1.
+            if(!(address_type === 0 && (address >>> 0) < this.sector_count || address_type !== 0 && address === 1))
+            {
+                this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
+                break;
+            }
+            var track = new Uint8Array(36);
+            var last = this.sector_count - 1;
+            track[1] = 34;
+            track[2] = 1;       // track number
+            track[3] = 1;       // session number
+            track[5] = 0x04;    // a data track, recorded uninterrupted
+            track[6] = 0x01;    // mode 1
+            // 8: start lba 0; 12: next writable address and 16: free blocks, both 0
+            track[24] = this.sector_count >> 24 & 0xFF;
+            track[25] = this.sector_count >> 16 & 0xFF;
+            track[26] = this.sector_count >> 8 & 0xFF;
+            track[27] = this.sector_count & 0xFF;
+            track[28] = last >> 24 & 0xFF;
+            track[29] = last >> 16 & 0xFF;
+            track[30] = last >> 8 & 0xFF;
+            track[31] = last & 0xFF;
+            this.atapi_reply(track, length);
             break;
 
         case ATAPI_CMD_MODE_SENSE_10:
             var length = this.data[8] | this.data[7] << 8;
-            var page_code = this.data[2];
+            var page_code = this.data[2] & 0x3F;
             dbg_log_extra = "page_code=" + h(page_code) + " length=" + length;
-            if(page_code === 0x2A)
+            var pages = this.atapi_mode_pages(page_code);
+            if(!pages)
             {
-                this.data_allocate(Math.min(30, length));
+                this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
+                break;
             }
-            this.data_end = this.data_length;
-            this.status_reg = ATA_SR_DRDY|ATA_SR_DSC|ATA_SR_DRQ;
+            // The 8 byte header, with no block descriptors.
+            var sense = new Uint8Array(8 + pages.length);
+            sense[0] = sense.length - 2 >> 8;
+            sense[1] = sense.length - 2 & 0xFF;
+            sense.set(pages, 8);
+            this.atapi_reply(sense, length);
             break;
 
         case ATAPI_CMD_MECHANISM_STATUS:
@@ -1731,19 +1773,59 @@ IDEInterface.prototype.atapi_handle = function()
             this.data_end = this.data_length;
             break;
 
+        case ATAPI_CMD_READ_DISC_STRUCTURE:
+            var length = this.data[9] | this.data[8] << 8;
+            var format = this.data[7];
+            dbg_log_extra = "format=" + h(format) + " length=" + length;
+            var structure = this.atapi_is_dvd() && this.data[6] === 0 ? this.atapi_disc_structure(format) : null;
+            if(!structure)
+            {
+                this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
+                break;
+            }
+            this.atapi_reply(structure, length);
+            break;
+
         case ATAPI_CMD_PAUSE:
         case ATAPI_CMD_GET_EVENT_STATUS_NOTIFICATION:
         case ATAPI_CMD_REPORT_KEY:
-        case ATAPI_CMD_READ_DISC_STRUCTURE:
             dbg_log_extra = "unimplemented";
             this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
             break;
 
         case ATAPI_CMD_READ_CD:
-            dbg_log_extra = "unimplemented";
-            this.data_allocate(0);
-            this.data_end = this.data_length;
-            this.status_reg = ATA_SR_DRDY|ATA_SR_DSC;
+            // The user data of each sector, which is all a data disc image has, is the one form
+            // of READ CD that is a plain read: send it down the READ (12) path. Anything asking
+            // for headers, subchannels or raw sectors cannot be answered from an iso.
+            var sector_type = this.data[1] >> 2 & 7;
+            dbg_log_extra = "type=" + sector_type + " fields=" + h(this.data[9]);
+            if((this.data[9] & 0xF8) === 0x10 && (sector_type === 0 || sector_type === 2))
+            {
+                do_dbg_log = false;
+                const read = new Uint8Array(12);
+                read[0] = ATAPI_CMD_READ_12;
+                read.set(this.data.subarray(2, 6), 2);
+                read.set(this.data.subarray(6, 9), 7);
+                if(this.features_reg & 1)
+                {
+                    this.atapi_read_dma(read);
+                }
+                else
+                {
+                    this.atapi_read(read);
+                }
+            }
+            else if((this.data[9] & 0xF8) === 0 || (this.data[6] | this.data[7] | this.data[8]) === 0)
+            {
+                // No fields, or no sectors: nothing to transfer, which is not an error.
+                this.data_allocate(0);
+                this.data_end = this.data_length;
+                this.status_reg = ATA_SR_DRDY|ATA_SR_DSC;
+            }
+            else
+            {
+                this.atapi_check_condition_response(ATAPI_SK_ILLEGAL_REQUEST, ATAPI_ASC_INV_FIELD_IN_CMD_PACKET);
+            }
             break;
 
         default:
@@ -1772,6 +1854,104 @@ IDEInterface.prototype.atapi_handle = function()
         dbg_log_extra = dbg_log_extra ? ` ${dbg_log_extra}:` : "";
         dbg_log(`${this.name}: ATAPI command ${cmd_name} (${h(cmd)}):${dbg_log_extra} ${result} ${regs_msg}`, LOG_DISK);
     }
+};
+
+// The answer to a command that returns data, cut to what the guest allocated for it.
+IDEInterface.prototype.atapi_reply = function(bytes, allocation_length)
+{
+    this.data_set(bytes.subarray(0, Math.min(bytes.length, allocation_length)));
+    this.data_end = this.data_length;
+    this.status_reg = ATA_SR_DRDY|ATA_SR_DSC|ATA_SR_DRQ;
+};
+
+// Anything larger than a cd can hold is a dvd. The guest cares: a windows installation medium is
+// several gigabytes, and a drive that calls it a cd is describing something that cannot exist.
+const CD_MAX_SECTORS = 80 * 60 * 75;
+
+IDEInterface.prototype.atapi_is_dvd = function()
+{
+    return this.sector_count > CD_MAX_SECTORS;
+};
+
+// GET CONFIGURATION, see [MMC-3] 5.5: the profiles this drive has and which is current, the core
+// feature saying it is an atapi device, and that the medium is removable from a tray that locks.
+IDEInterface.prototype.atapi_configuration = function(request_type, start)
+{
+    const dvd = this.atapi_is_dvd();
+    const current = this.buffer ? (dvd ? 0x10 : 0x08) : 0;
+    const features = [
+        [0x0000, [0x03, 8, 0x00, 0x10, current === 0x10 ? 1 : 0, 0, 0x00, 0x08, current === 0x08 ? 1 : 0, 0]],
+        [0x0001, [0x0B, 8, 0, 0, 0, 2, 0, 0, 0, 0]],
+        [0x0003, [0x03, 4, 0x29, 0, 0, 0]],
+    ];
+    const body = [];
+    for(const [code, rest] of features)
+    {
+        if(request_type === 2 ? code !== start : code < start) continue;
+        body.push(code >> 8, code & 0xFF, ...rest);
+    }
+    const length = 4 + body.length;
+    return new Uint8Array([
+        length >> 24 & 0xFF, length >> 16 & 0xFF, length >> 8 & 0xFF, length & 0xFF,
+        0, 0, current >> 8, current & 0xFF,
+        ...body,
+    ]);
+};
+
+// MODE SENSE pages, see [MMC-2] 5.5. Only the ones a guest asks a read-only drive about; null for
+// the rest, which a drive is allowed not to have.
+IDEInterface.prototype.atapi_mode_pages = function(page_code)
+{
+    const error_recovery = [0x01, 6, 0x00, 5, 0, 0, 0, 0];
+    const capabilities = [
+        0x2A, 18,
+        0x3B,                   // reads cd-r, cd-rw, dvd-rom, dvd-r and dvd-ram
+        0x00,                   // writes nothing
+        0x71,                   // audio play, mode 2 forms 1 and 2, multisession
+        0x60,                   // reports isrc and upc
+        0x29,                   // a tray, which locks and ejects
+        0x00,
+        0x02, 0xC0,             // maximum read speed, 704 kB/s
+        0x00, 0x02,             // volume levels
+        0x02, 0x00,             // a 512 kB buffer
+        0x02, 0xC0,             // current read speed
+        0, 0, 0, 0,
+    ];
+    if(page_code === 0x01) return new Uint8Array(error_recovery);
+    if(page_code === 0x2A) return new Uint8Array(capabilities);
+    if(page_code === 0x3F) return new Uint8Array([...error_recovery, ...capabilities]);
+    return null;
+};
+
+// READ DISC STRUCTURE for a dvd, see [MMC-3] 5.21. A single layer pressed disc with no copy
+// protection.
+IDEInterface.prototype.atapi_disc_structure = function(format)
+{
+    const last = this.sector_count - 1;
+    if(format === 0x00)
+    {
+        const out = new Uint8Array(4 + 2048);
+        out[0] = 2050 >> 8; out[1] = 2050 & 0xFF;
+        out[4] = 0x01;          // dvd-rom, version 1
+        out[5] = 0x0F;          // 120 mm, maximum rate not specified
+        out[6] = 0x01;          // one layer, embossed
+        out[7] = 0x00;
+        // 8: first sector of the data area, 0
+        out[12] = last >> 24 & 0xFF; out[13] = last >> 16 & 0xFF; out[14] = last >> 8 & 0xFF; out[15] = last & 0xFF;
+        out.copyWithin(16, 12, 16);
+        return out;
+    }
+    if(format === 0x01)
+    {
+        return new Uint8Array([0, 6, 0, 0, 0, 0, 0, 0]);
+    }
+    if(format === 0x04)
+    {
+        const out = new Uint8Array(4 + 2048);
+        out[0] = 2050 >> 8; out[1] = 2050 & 0xFF;
+        return out;
+    }
+    return null;
 };
 
 IDEInterface.prototype.atapi_check_condition_response = function(sense_key, additional_sense)
