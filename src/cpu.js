@@ -93,6 +93,13 @@ export function CPU(bus, wm, stop_idling)
     this.lstar = view(Int32Array, memory, 336, 2);
     this.cstar = view(Int32Array, memory, 344, 2);
     this.sfmask = view(Int32Array, memory, 352, 2);
+
+    // The lazy flag operands of 64-bit arithmetic, kept apart from the 32-bit ones above.
+    this.last_op1_64 = view(Int32Array, memory, 256, 2);
+    this.last_result_64 = view(Int32Array, memory, 264, 2);
+    // IA32_TSC_AUX and IA32_TSC_ADJUST, which are storage: a guest reads back what it wrote.
+    this.tsc_aux = view(Int32Array, memory, 456, 1);
+    this.tsc_adjust = view(Int32Array, memory, 464, 2);
     this.segment_limits = view(Uint32Array, memory, 768, 8);
     this.segment_access_bytes = view(Uint8Array, memory, 512, 8);
 
@@ -662,6 +669,15 @@ CPU.prototype.get_state = function()
     // Upstream put the page attribute table at 93, which this fork already uses; appending keeps
     // both, and an older image simply has nothing here.
     state[104] = this.pat;
+    // State 39 and 66 hold what a 32-bit machine has: the low halves of eight registers and eight
+    // xmm registers. Long mode has sixteen of each at full width, and a restore that keeps only
+    // the old part hands a running 64-bit kernel r8-r15 and the top of every pointer as zero.
+    // Both are kept, so that an image still restores on a build that does not read these.
+    state[105] = this.reg64;
+    state[106] = this.reg_xmm32s;
+    state[107] = new Int32Array([...this.last_op1_64, ...this.last_result_64]);
+    state[108] = this.tsc_aux[0];
+    state[109] = this.tsc_adjust;
 
     return state;
 };
@@ -775,7 +791,15 @@ CPU.prototype.set_state = function(state)
 
     this.instruction_pointer.set(state[37]);
     this.previous_ip.set(state[38]);
-    for(let i = 0; i < 8; i++) this.set_reg32(i, state[39][i]);
+    if(state[105])
+    {
+        this.reg64.set(state[105]);
+    }
+    else
+    {
+        this.reg64.fill(0);
+        for(let i = 0; i < 8; i++) this.set_reg32(i, state[39][i]);
+    }
     this.sreg.set(state[40]);
     this.dreg.set(state[41]);
     state[42] && this.reg_pdpte.set(state[42]);
@@ -853,7 +877,14 @@ CPU.prototype.set_state = function(state)
 
     this.tss_size_32[0] = state[64];
 
-    this.reg_xmm32s.set(state[66]);
+    this.reg_xmm32s.set(state[106] || state[66]);
+    if(state[107])
+    {
+        this.last_op1_64.set(state[107].subarray(0, 2));
+        this.last_result_64.set(state[107].subarray(2, 4));
+    }
+    this.tsc_aux[0] = state[108] || 0;
+    state[109] && this.tsc_adjust.set(state[109]);
 
     this.fpu_st.set(state[67]);
     this.fpu_stack_empty[0] = state[68];
@@ -865,9 +896,11 @@ CPU.prototype.set_state = function(state)
     this.fpu_dp_selector[0] = state[74];
     this.fpu_opcode[0] = state[75];
 
-    if(state[86] !== undefined) this.last_result = state[86];
-    if(state[87] !== undefined) this.fpu_status_word = state[87];
-    if(state[88] !== undefined) this.mxcsr = state[88];
+    // Written into the views, not assigned over them: assigning replaced each view with a detached
+    // copy, so the restored value never reached the emulator and this object stopped seeing it.
+    if(state[86] !== undefined) this.last_result.set(state[86]);
+    if(state[87] !== undefined) this.fpu_status_word.set(state[87]);
+    if(state[88] !== undefined) this.mxcsr.set(state[88]);
 
     const bitmap = new Bitmap(state[78].buffer);
     const packed_memory = state[77];
