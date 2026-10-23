@@ -50,10 +50,15 @@
 //                    has nowhere to install to
 //   HDA_GB=n         how large to make it when creating (default 24, which is what windows 10 asks
 //                    for; the file is sparse, so only what the guest writes costs anything)
-//   SAVE_AT=n        write the whole machine to OUT/state.bin after n seconds
+//   SAVE_AT=n        write the whole machine to OUT/state.bin when the guest's clock reaches n
+//                    seconds, with the harness's clock beside it in OUT/state.json and, when there
+//                    is a disk, a copy of the disk as it was at that instant in OUT/state-disk.img
+//   STOP_AFTER_SAVE=1 end the run once it has saved, successfully. What is on the disk then is
+//                    exactly what the state expects to find there
 //   RESTORE=path     start from a state written that way instead of booting. The frontier of this
 //                    work is several minutes into a boot, and re-reaching it for every experiment
-//                    is most of the cost of an experiment
+//                    is most of the cost of an experiment. HDA has to be the disk that was saved
+//                    with it - a copy of state-disk.img - and not one that ran on afterwards
 //   KEYS_AT=n,m,...  press a key at each of these times, in seconds. A guest polling int 16h is
 //                    waiting for one; whether pressing it changes anything says which guest it is
 //   SCRIPT=t:key,... press named keys at given times, which is how a dialog driven guest is told
@@ -146,8 +151,33 @@ let jitter_base_ms = 0;     // the clock at the start of that bucket
 let halted_ms = 0;
 let halted_since = 0;
 
+// Held still while the machine is being saved. A save takes seconds of real time, and if the guest
+// was halted when it stopped those seconds would count as halted time - so the clock written beside
+// the state, and the timestamp counter written inside it, would disagree by however long the write
+// took.
+let clock_frozen_ms = null;
+
+// What a restored run needs to carry on with the clock where the saved one left it. Without it the
+// clock starts again from zero while the timestamp counter and the guest's own idea of the time do
+// not, and windows sees time run backwards.
+function clock_snapshot()
+{
+    return { instructions_total, halted_ms, jitter_bucket, jitter_base_ms, reboots };
+}
+
+function clock_resume(saved, cpu)
+{
+    ({ instructions_total, halted_ms, jitter_bucket, jitter_base_ms, reboots } = saved);
+    // The instruction counter is not part of a saved machine, so the delta starts from whatever
+    // this one's counter says now.
+    instructions_last = cpu.instruction_counter[0] >>> 0;
+    halted_since = 0;
+    clock_cpu = cpu;
+}
+
 function virtual_ms()
 {
+    if(clock_frozen_ms !== null) return clock_frozen_ms;
     if(!clock_cpu) return 0;
     // the counter is a u32 that wraps, so take the delta rather than the value
     const now = clock_cpu.instruction_counter[0] >>> 0;
@@ -239,6 +269,7 @@ const SERIAL_EXPECT = process.env.SERIAL_EXPECT || "";
 const STOP_ON_SERIAL = process.env.STOP_ON_SERIAL === "1";
 const HDA_GB = +process.env.HDA_GB || 24;
 const SAVE_AT = +process.env.SAVE_AT || 0;
+const STOP_AFTER_SAVE = process.env.STOP_AFTER_SAVE === "1";
 const RESTORE = process.env.RESTORE || "";
 const KEYS_AT = (process.env.KEYS_AT || "").split(",").filter(Boolean).map(Number);
 const KEYS_EVERY = +process.env.KEYS_EVERY || 0;
@@ -482,9 +513,25 @@ emulator.add_listener("emulator-loaded", async () => {
     if(RESTORE)
     {
         note("restoring " + RESTORE);
+        // The clock first: restoring the timestamp counter reads the clock, and it has to read the
+        // time the machine was saved at rather than zero.
+        const clock_path = RESTORE.replace(/\.bin$/, "") + ".json";
+        if(fs.existsSync(clock_path))
+        {
+            const saved = JSON.parse(fs.readFileSync(clock_path, "utf8"));
+            clock_resume(saved, emulator.v86.cpu);
+            note(`  carrying on from the saved clock at ${(virtual_ms() / 1000).toFixed(1)}s, ` +
+                 `${reboots} resets so far`);
+        }
+        else if(DETERMINISTIC)
+        {
+            note(`  no ${clock_path}, so the clock starts again from zero and the guest will see time go backwards`);
+        }
         await emulator.restore_state(new Uint8Array(fs.readFileSync(RESTORE)).buffer);
         await emulator.run();
-        note("restored and running");
+        // The rate is measured over windows of guest time, and the first should not start at zero.
+        rate_last_guest = virtual_ms() / 1000;
+        note(`[${stamp()}s] restored and running`);
     }
     else
     {
@@ -656,6 +703,12 @@ const sampler = setInterval(() => {
     if(DETERMINISTIC) virtual_schedule();
     // At a short sample interval the first tick can beat the emulator into existence.
     if(!emulator.v86 || !emulator.v86.cpu) return;
+    if(save_state_busy) return;
+    if(SAVE_AT && !save_state_done && +stamp() >= SAVE_AT)
+    {
+        save_machine();
+        return;
+    }
 
     // A machine halted with interrupts closed is not going to do anything else. Windows gets here
     // by bugchecking without being able to restart, and nothing after it is worth waiting for.
@@ -816,17 +869,43 @@ const shooter = setInterval(() => {
     screenshot(tag);
 }, SHOT_MS);
 
-if(SAVE_AT)
+// On the guest's clock, from the sampler, so that a deterministic run saves at the same point in
+// the boot however busy the host is.
+let save_state_done = false;
+let save_state_busy = false;
+
+async function save_machine()
 {
-    setTimeout(async () => {
-        const path = OUT + "/state.bin";
-        note(`[${stamp()}s] ** saving the machine to ${path}`);
-        await emulator.stop();
-        const state = await emulator.save_state();
-        fs.writeFileSync(path, Buffer.from(state));
-        await emulator.run();
-        note(`  wrote ${(state.byteLength / (1024 * 1024)).toFixed(0)} MB`);
-    }, SAVE_AT * 1000);
+    save_state_busy = true;
+    const path = OUT + "/state.bin";
+    note(`[${stamp()}s] ** saving the machine to ${path}`);
+    await emulator.stop();
+    clock_frozen_ms = virtual_ms();
+    const clock = clock_snapshot();
+    const state = await emulator.save_state();
+    fs.writeFileSync(path, Buffer.from(state));
+    fs.writeFileSync(OUT + "/state.json", JSON.stringify(clock) + "\n");
+    note(`  wrote ${(state.byteLength / (1024 * 1024)).toFixed(0)} MB`);
+    // The disk is outside the state, and a run that carries on writes to it, after which it no
+    // longer matches what the guest believes is there. A clone costs nothing on apfs and keeps the
+    // pair consistent. Every write the guest has issued has already landed: the disk is
+    // written synchronously.
+    if(HDA)
+    {
+        fs.copyFileSync(HDA, OUT + "/state-disk.img", fs.constants.COPYFILE_FICLONE);
+        note(`  and the disk as it is now, to ${OUT}/state-disk.img`);
+    }
+    save_state_done = true;
+    if(STOP_AFTER_SAVE)
+    {
+        finish();
+        return;
+    }
+    // Real time spent writing is not halted time.
+    halted_since = 0;
+    clock_frozen_ms = null;
+    await emulator.run();
+    save_state_busy = false;
 }
 
 
@@ -927,7 +1006,11 @@ function finish() {
     }
     // The verdict, when the run was asked to look for something. Everything above is description;
     // this is the one line that says whether what was asked for happened.
-    if(SERIAL_EXPECT)
+    if(STOP_AFTER_SAVE && save_state_done)
+    {
+        note(`\n== saved at ${(clock_frozen_ms / 1000).toFixed(1)}s and stopped, as asked`);
+    }
+    else if(SERIAL_EXPECT)
     {
         note("\n== verdict");
         if(serial_seen_at !== null)
