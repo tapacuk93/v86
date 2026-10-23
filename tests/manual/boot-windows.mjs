@@ -69,6 +69,7 @@
 //                    wrong phase is a wasted run rather than an obvious failure
 
 import fs from "node:fs";
+import child_process from "node:child_process";
 import zlib from "node:zlib";
 import url from "node:url";
 
@@ -890,9 +891,21 @@ async function save_machine()
     // longer matches what the guest believes is there. A clone costs nothing on apfs and keeps the
     // pair consistent. Every write the guest has issued has already landed: the disk is
     // written synchronously.
+    //
+    // cp -c rather than copyFileSync on a mac: node's COPYFILE_FICLONE falls back there without
+    // saying so, to a copy that fills in every hole, so a sparse 24 GiB disk with a few hundred
+    // megabytes on it becomes 24 GiB of the host's disk. COPYFILE_FICLONE_FORCE is ENOSYS.
     if(HDA)
     {
-        fs.copyFileSync(HDA, OUT + "/state-disk.img", fs.constants.COPYFILE_FICLONE);
+        const target = OUT + "/state-disk.img";
+        if(process.platform === "darwin")
+        {
+            child_process.execFileSync("cp", ["-c", HDA, target]);
+        }
+        else
+        {
+            fs.copyFileSync(HDA, target, fs.constants.COPYFILE_FICLONE);
+        }
         note(`  and the disk as it is now, to ${OUT}/state-disk.img`);
     }
     save_state_done = true;
